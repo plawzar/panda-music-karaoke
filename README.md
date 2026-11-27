@@ -2,7 +2,13 @@
 
 Бесплатная студия для синхронизации текста с вокалом, экспорта TTML/LRC и подготовки текстов к дистрибуции и для Genius.
 
-**[Скачать для Windows и macOS](https://github.com/plawzar/panda-music-karaoke/releases/latest)** · [Как запустить](START-HERE.txt)
+## Как запустить
+
+1. **[Скачай ZIP для Windows и Mac](https://github.com/plawzar/panda-music-karaoke/releases/download/v0.1.0-beta.6/PANDA-MUSIC-Karaoke-Studio-Windows-macOS-v0.1.0-beta.6.zip)**.
+2. Распакуй ZIP и открой папку **PANDA MUSIC Karaoke Studio**. Дважды щёлкни по файлу для своей системы:
+   - **Windows** — `Launch PANDA MUSIC Karaoke - Windows.bat`
+   - **Mac** — `Launch PANDA MUSIC Karaoke - Mac.command`
+3. Оставь окно запуска открытым. В первый раз нужен интернет для установки. Когда всё готово, студия откроется в браузере. Если вкладка не открылась, [открой студию вручную](http://127.0.0.1:8001/).
 
 ![Главное окно PANDA MUSIC с демонстрационным треком](docs/studio-screenshot.png)
 
