@@ -5,6 +5,7 @@ title PANDA MUSIC - Karaoke Studio
 color 0B
 set "PYTHONUNBUFFERED=1"
 set "PYTHONIOENCODING=utf-8"
+if not defined PANDA_STUDIO_PORT set "PANDA_STUDIO_PORT=8001"
 
 echo =======================================================
 echo   PANDA MUSIC - Karaoke Studio
@@ -44,12 +45,12 @@ if not defined HF_HOME set "HF_HOME=%~dp0.model-cache\huggingface"
 if not defined TORCH_HOME set "TORCH_HOME=%~dp0.model-cache\torch"
 if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0.model-cache"
 if not defined AUDIO_SEPARATOR_MODEL_DIR set "AUDIO_SEPARATOR_MODEL_DIR=%~dp0.model-cache\audio-separator"
-echo Server starting at: http://127.0.0.1:8001
+echo Server starting at: http://127.0.0.1:%PANDA_STUDIO_PORT%
 echo To stop server: press Ctrl+C
 echo.
 
 REM Open browser after 2 seconds
-start "" cmd /c "timeout /t 2 /nobreak >nul && start http://127.0.0.1:8001"
+if not defined PANDA_NO_BROWSER start "" cmd /c "timeout /t 2 /nobreak >nul && start http://127.0.0.1:%PANDA_STUDIO_PORT%"
 
-"%PY_EXE%" -m uvicorn app:app --host 127.0.0.1 --port 8001 --log-level info --no-access-log
+"%PY_EXE%" -m uvicorn app:app --host 127.0.0.1 --port %PANDA_STUDIO_PORT% --log-level info --no-access-log
 pause

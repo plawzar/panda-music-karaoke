@@ -40,22 +40,20 @@ $env:UV_PYTHON_INSTALL_DIR = Join-Path $runtime 'python'
 $environment = Join-Path $root 'venv'
 $python = Join-Path $environment 'Scripts/python.exe'
 if (!(Test-Path -LiteralPath $python)) {
-    Invoke-Uv @('python', 'install', '3.12.16')
+    Invoke-Uv @('python', 'install', '--no-bin', '3.12.16')
     Invoke-Uv @('venv', '--managed-python', '--python', '3.12.16', $environment)
 }
 
 Write-Host '[2/4] Audio and speech dependencies'
 $torchIndex = 'https://download.pytorch.org/whl/cpu'
-$onnx = 'onnxruntime==1.26.0'
 if (!$Cpu -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
     $driver = & nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>$null | Select-Object -First 1
     if ($driver -and $driver -match '^\d+\.\d+$' -and [version]$driver -ge [version]'570.0') {
         $torchIndex = 'https://download.pytorch.org/whl/cu128'
-        $onnx = 'onnxruntime-gpu==1.26.0'
     }
 }
 Invoke-Uv @('pip','install','--python',$python,'--index-url',$torchIndex,'torch==2.8.0','torchaudio==2.8.0','torchvision==0.23.0')
-Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements.txt'),$onnx)
+Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements.txt'),'onnxruntime==1.26.0')
 
 Write-Host '[3/4] FFmpeg'
 $ffmpeg = Join-Path $root 'ffmpeg'
@@ -81,4 +79,5 @@ if (!(Test-Path -LiteralPath (Join-Path $llama 'llama-server.exe'))) {
 }
 Save-VerifiedFile 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true' (Join-Path $editor 'Qwen3-4B-Q4_K_M.gguf') '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5'
 
-Write-Host 'Installation complete. Launch start.bat.'
+Set-Content -LiteralPath (Join-Path $runtime 'setup-complete') -Value 'PANDA MUSIC Karaoke Studio Windows beta' -Encoding ASCII
+Write-Host 'Installation complete. Use Launch PANDA MUSIC Karaoke.bat to open the studio.'
