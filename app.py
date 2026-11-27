@@ -1959,7 +1959,7 @@ def _split_to_syllables(segments: list) -> list:
         new_words = []
         for w in seg.get("words", []):
             raw      = w["word"]
-            clean    = re.sub(r"[.,!?\"'""''…\-]", "", raw).strip()
+            clean    = re.sub(r"""[.,!?'"…-]""", "", raw).strip()
             parts    = dic.inserted(clean).split("-") if clean else [raw]
             if len(parts) <= 1:
                 new_words.append(w)

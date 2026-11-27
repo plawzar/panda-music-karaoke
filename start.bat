@@ -45,6 +45,7 @@ if not defined HF_HOME set "HF_HOME=%~dp0.model-cache\huggingface"
 if not defined TORCH_HOME set "TORCH_HOME=%~dp0.model-cache\torch"
 if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0.model-cache"
 if not defined AUDIO_SEPARATOR_MODEL_DIR set "AUDIO_SEPARATOR_MODEL_DIR=%~dp0.model-cache\audio-separator"
+if not exist "%AUDIO_SEPARATOR_MODEL_DIR%" mkdir "%AUDIO_SEPARATOR_MODEL_DIR%"
 echo Server starting at: http://127.0.0.1:%PANDA_STUDIO_PORT%
 echo To stop server: press Ctrl+C
 echo.
