@@ -15,6 +15,16 @@ call :READ_PROFILE
 if errorlevel 1 goto :FAILED
 
 :LAUNCH
+if not "%PANDA_SKIP_RELEASE_CHECK%"=="1" if exist "venv\Scripts\python.exe" if exist "update_release.py" (
+    "%~dp0venv\Scripts\python.exe" "%~dp0update_release.py"
+    if errorlevel 21 exit /b 1
+    if errorlevel 20 (
+        set "PANDA_SKIP_RELEASE_CHECK=1"
+        "%ComSpec%" /d /s /c ""%~f0""
+        exit /b
+    )
+)
+set "PANDA_SKIP_RELEASE_CHECK="
 if "%PANDA_LLAMA_BUILD%"=="cpu" set "PANDA_LIGHTWEIGHT=1"
 if "%PANDA_VOCAL_BACKEND%"=="directml" (
     set "PANDA_STUDIO_PYTHON=%~dp0.runtime\directml-venv\Scripts\python.exe"

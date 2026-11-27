@@ -112,6 +112,16 @@ if [ ! -x "$python" ] || [ "$(cat "$setup_stamp" 2>/dev/null || :)" != "$require
     printf '%s\n' "$requirements_hash" > "$setup_stamp"
 fi
 
+if [ "${PANDA_SKIP_RELEASE_CHECK:-}" != 1 ] && [ -x "$python" ] && [ -f "$root/update_release.py" ]; then
+    update_status=0
+    "$python" "$root/update_release.py" || update_status=$?
+    case "$update_status" in
+        20) export PANDA_SKIP_RELEASE_CHECK=1; exec /bin/sh "$root/Launch PANDA MUSIC Karaoke - Mac.command" "$@" ;;
+        21) exit 1 ;;
+    esac
+fi
+unset PANDA_SKIP_RELEASE_CHECK
+
 if [ "$platform" = Darwin-arm64 ] && [ "$ram_mib" -ge 12288 ]; then
     vocal_requirements_hash="$requirements_hash:$(sha256 requirements-mac-vocals.txt)"
     vocal_setup_stamp="$runtime/vocal-setup-complete"
