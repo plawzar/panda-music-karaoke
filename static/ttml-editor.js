@@ -1,0 +1,3925 @@
+function cleanLyricsLine(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/g, ' ')
+    .trim();
+}
+
+function isSectionHeader(str) {
+  if (!str) return false;
+  const t = cleanLyricsLine(str);
+  // [Verse 1], [Chorus], [Refrain], [Strophe 2], [Bridge], [Pre-Chorus], [Intro], [Outro], [Hook], [Part 1]
+  if (/^\[\s*(verse|strophe|chorus|refrain|bridge|pre-chorus|prechorus|post-chorus|hook|intro|outro|part|interlude|break|build|drop|skit)\b[^\]]*\]$/i.test(t)) {
+    return true;
+  }
+  // Verse 1:, Chorus:, Refrain:, Strophe 1:, Bridge:, Intro:, Outro:
+  if (/^(verse|strophe|chorus|refrain|bridge|pre-chorus|prechorus|post-chorus|hook|intro|outro|part)\s*\d*\s*[:\-–—]\s*$/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeQueue(track) {
+  if (!track || !Array.isArray(track.unplacedLines)) return [];
+  const cleanList = [];
+  track.unplacedLines.forEach((item, idx) => {
+    const raw = typeof item === 'string' ? item : (item?.text || item?.adlib || '');
+    const clean = cleanLyricsLine(raw);
+    if (!clean || clean.length === 0 || isSectionHeader(clean)) return;
+
+    if (typeof item === 'object' && item !== null && item.id) {
+      item.text = clean;
+      cleanList.push(item);
+    } else {
+      cleanList.push({
+        id: `Q-${Date.now()}-${Math.random().toString(36).substr(2, 6)}-${idx}`,
+        text: clean,
+        adlib: (typeof item === 'object' && item?.adlib) ? clean : null,
+        agent: (typeof item === 'object' && item?.agent) || 'v1',
+      });
+    }
+  });
+  track.unplacedLines = cleanList;
+  return cleanList;
+}
+
+function initStudioEditor() {
+  // Timeline Zoom
+  const zoomSlider = document.getElementById('zoomSlider');
+  const zoomInBtn  = document.getElementById('zoomInBtn');
+  const zoomOutBtn = document.getElementById('zoomOutBtn');
+  const scrollArea = document.getElementById('tlScrollArea');
+
+  if (zoomSlider) zoomSlider.addEventListener('input', e => applyZoom(+e.target.value));
+  if (zoomInBtn)  zoomInBtn.addEventListener('click', () => {
+    applyZoom(Studio.pps * 1.3, Studio.lastMouseTimelineTime, Studio.lastMouseViewportPx);
+  });
+  if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => {
+    applyZoom(Studio.pps * 0.77, Studio.lastMouseTimelineTime, Studio.lastMouseViewportPx);
+  });
+
+  if (scrollArea) {
+    scrollArea.addEventListener('mousemove', e => {
+      const saRect = scrollArea.getBoundingClientRect();
+      const vx = e.clientX - saRect.left;
+      if (vx >= 0 && vx <= scrollArea.clientWidth) {
+        Studio.lastMouseViewportPx = vx;
+        Studio.lastMouseTimelineTime = (scrollArea.scrollLeft + vx) / Studio.pps;
+      }
+    });
+
+    scrollArea.addEventListener('wheel', e => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const saRect = scrollArea.getBoundingClientRect();
+        const mouseViewportPx = Math.max(0, Math.min(scrollArea.clientWidth, e.clientX - saRect.left));
+        const mouseTimelinePx = scrollArea.scrollLeft + mouseViewportPx;
+        const mouseTime = Math.max(0, mouseTimelinePx / Studio.pps);
+        const zoomFactor = e.deltaY < 0 ? 1.18 : 0.85;
+        applyZoom(Studio.pps * zoomFactor, mouseTime, mouseViewportPx);
+      }
+    }, { passive: false });
+  }
+
+  // Transport Controls
+  document.getElementById('playPauseBtn')?.addEventListener('click', togglePlayPause);
+  document.getElementById('seekBackBtn')?.addEventListener('click', () => seekAudio(-5));
+  document.getElementById('seekFwdBtn')?.addEventListener('click',  () => seekAudio(+5));
+  document.getElementById('volumeSlider')?.addEventListener('input', e => {
+    Studio.volume = +e.target.value;
+    if (Studio.audio) Studio.audio.volume = Studio.volume;
+  });
+
+  // Playback Speed Selector (0.25x, 0.5x, 0.75x, 1.0x)
+  const speedSelect = document.getElementById('speedSelect');
+  if (speedSelect) {
+    speedSelect.value = String(Studio.playbackRate || 1);
+    speedSelect.addEventListener('change', e => {
+      const rate = parseFloat(e.target.value) || 1.0;
+      Studio.playbackRate = rate;
+      if (Studio.audio) Studio.audio.playbackRate = rate;
+    });
+  }
+
+  // Undo / Redo
+  document.getElementById('undoBtn')?.addEventListener('click', undo);
+  document.getElementById('redoBtn')?.addEventListener('click', redo);
+
+  // Line & Lane & Syllable Batch Actions
+  document.getElementById('addLaneBtn')?.addEventListener('click', addVocalLane);
+  document.getElementById('addLaneBtnMini')?.addEventListener('click', addVocalLane);
+  document.getElementById('removeLaneBtn')?.addEventListener('click', removeVocalLane);
+  document.getElementById('removeLaneBtnMini')?.addEventListener('click', removeVocalLane);
+  document.getElementById('copySylBtn')?.addEventListener('click', copySelectedSyllables);
+  document.getElementById('pasteSylBtn')?.addEventListener('click', pasteSyllables);
+  document.getElementById('dupSylBtn')?.addEventListener('click', duplicateSelectedSyllables);
+  document.getElementById('splitSylBtn')?.addEventListener('click', openSplitSyllableModal);
+  document.getElementById('mergeSylBtn')?.addEventListener('click', mergeSelectedSyllables);
+  document.getElementById('delSylBtn')?.addEventListener('click', deleteSelectedSyllables);
+  document.getElementById('undoBtn')?.addEventListener('click', undo);
+  document.getElementById('redoBtn')?.addEventListener('click', redo);
+  document.getElementById('addLineBtn')?.addEventListener('click', addNewLineAtPlayhead);
+
+  // Syllable Split Modal Controls
+  document.getElementById('closeSplitSylModalBtn')?.addEventListener('click', closeSplitSyllableModal);
+  document.getElementById('cancelSplitSylBtn')?.addEventListener('click', closeSplitSyllableModal);
+  document.getElementById('confirmSplitSylBtn')?.addEventListener('click', commitSplitSyllable);
+  document.getElementById('splitPatternInput')?.addEventListener('input', updateSplitPreview);
+  document.getElementById('splitPatternInput')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSplitSyllable();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSplitSyllableModal();
+    }
+  });
+  document.querySelectorAll('input[name="splitTimeMode"]').forEach(r => {
+    r.addEventListener('change', updateSplitPreview);
+  });
+  document.getElementById('snapToggleBtn')?.addEventListener('click', toggleSnapping);
+  document.getElementById('sortLinesBtn')?.addEventListener('click', sortLinesByTimestamp);
+  document.getElementById('alignLinesBtn')?.addEventListener('click', () => runTrackLineAlignment());
+  document.getElementById('alignTrackBtn')?.addEventListener('click', runTrackAlignment);
+  document.getElementById('exportTrackTtmlBtn')?.addEventListener('click', exportSingleTrackTTML);
+  document.getElementById('tapSyncModalBtn')?.addEventListener('click', () => {
+    if (typeof openMultiVoiceTapSync === 'function') openMultiVoiceTapSync();
+  });
+
+  // Vocals Waveform Toggle
+  document.getElementById('waveVocalsBtn')?.addEventListener('click', toggleVocalsWave);
+  document.getElementById('vocalsAudioBtn')?.addEventListener('click', toggleVocalsAudio);
+
+  // 3-Step Workflow Mode Switcher
+  document.getElementById('modeBtnText')?.addEventListener('click', () => setWorkflowMode('text'));
+  document.getElementById('modeBtnLine')?.addEventListener('click', () => setWorkflowMode('line'));
+  document.getElementById('modeBtnSyllable')?.addEventListener('click', () => setWorkflowMode('syllable'));
+
+  // Mode 1: Plain Text Ingestion Tools & Actions
+  const textModeArea = document.getElementById('textModeTextarea');
+  const textModeCount = document.getElementById('textModeLineCount');
+  if (textModeArea) {
+    textModeArea.addEventListener('input', () => {
+      const lines = textModeArea.value.split('\n').map(l => l.trim()).filter(Boolean);
+      if (textModeCount) textModeCount.textContent = `${lines.length} Lines`;
+    });
+  }
+
+  document.getElementById('textModePasteBtn')?.addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && textModeArea) {
+        textModeArea.value = text;
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        if (textModeCount) textModeCount.textContent = `${lines.length} Lines`;
+        toast('Lyrics pasted from clipboard!', 'success');
+      }
+    } catch {
+      textModeArea?.focus();
+    }
+  });
+
+
+  document.getElementById('textModeCleanBtn')?.addEventListener('click', () => {
+    if (!textModeArea) return;
+    const cleaned = textModeArea.value.split(/\r?\n/).map(l => cleanLyricsLine(l)).filter(l => l.length > 0 && !isSectionHeader(l)).join('\n');
+    textModeArea.value = cleaned;
+    const lines = cleaned.split('\n').filter(Boolean);
+    if (textModeCount) textModeCount.textContent = `${lines.length} Lines`;
+    toast('Removed blank lines and section headers!', 'success');
+  });
+
+  document.getElementById('textModeSendToQueueBtn')?.addEventListener('click', () => {
+    const raw = textModeArea?.value;
+    if (!raw || !raw.trim()) return toast('Please paste lyrics text first!', 'error');
+    const detectAdlibs = document.getElementById('textModeDetectAdlibs')?.checked ?? true;
+    const track = getActiveTrack();
+    if (!track) return toast('No active track selected.', 'error');
+
+    const rawLines = raw.split(/\r?\n/);
+    const newItems = [];
+    let addedCount = 0;
+
+    rawLines.forEach((rawL, idx) => {
+      const l = cleanLyricsLine(rawL);
+      if (!l || l.length === 0) return; // Ignore blank lines & whitespace
+      if (isSectionHeader(l)) return;   // Ignore headers like [Verse 1], Chorus: etc.
+
+      let isAdlib = false;
+      let cleanText = l;
+      if (detectAdlibs && ((cleanText.startsWith('(') && cleanText.endsWith(')')) || (cleanText.startsWith('[') && cleanText.endsWith(']')))) {
+        isAdlib = true;
+        cleanText = cleanLyricsLine(cleanText.substring(1, cleanText.length - 1));
+        if (!cleanText || cleanText.length === 0) return;
+      }
+
+      newItems.push({
+        id: `Q-${Date.now()}-${Math.random().toString(36).substr(2, 6)}-${idx}`,
+        text: cleanText,
+        adlib: isAdlib ? cleanText : null,
+        agent: 'v1',
+      });
+      addedCount++;
+    });
+
+    if (newItems.length === 0) {
+      return toast('No valid text lines found (only blank lines/headers?).', 'error');
+    }
+
+    // Replace unplacedLines cleanly so previous blank lines or duplicates don't linger
+    track.unplacedLines = newItems;
+    Studio.pendingQueueId = newItems[0]?.id || null;
+
+    saveActiveTrackToBackend();
+    setWorkflowMode('line');
+    switchInspectorTab('queue', true);
+    refreshEditorViews();
+    toast(`${addedCount} lines loaded into Line Pool! (Blank lines ignored)`, 'success');
+  });
+
+  async function triggerTextModeScan() {
+    const raw = textModeArea?.value.trim();
+    if (!raw) return toast('Please paste lyrics text first!', 'error');
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    await runTrackLineAlignment(lines);
+  }
+
+  document.getElementById('textModeProceedBtn')?.addEventListener('click', triggerTextModeScan);
+  document.getElementById('textModeScanBtn')?.addEventListener('click', triggerTextModeScan);
+  document.getElementById('proceedToSyllablesBtn')?.addEventListener('click', async () => {
+    await runTrackAlignment();
+    setWorkflowMode('syllable');
+  });
+
+  // Timeline Mousedown / Marquee / Seek Handlers
+  const tlInner = document.getElementById('tlInner');
+  if (tlInner) {
+    tlInner.addEventListener('mousedown', handleTimelineMouseDown);
+  }
+  const rulerTrack = document.getElementById('tlRulerTrack');
+  if (rulerTrack) {
+    rulerTrack.addEventListener('mousedown', e => {
+      const rect = rulerTrack.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      seekToTimelinePx(clickX);
+    });
+  }
+  const waveTrack = document.getElementById('tlWaveTrack');
+  if (waveTrack) {
+    waveTrack.addEventListener('mousedown', e => {
+      const rect = waveTrack.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      seekToTimelinePx(clickX);
+    });
+  }
+
+  function seekToTimelinePx(px) {
+    const seekTime = Math.max(0, Math.min(Studio.duration || 1000, px / Studio.pps));
+    if (Studio.audio) {
+      Studio.audio.currentTime = seekTime;
+      Studio.currentTime = seekTime;
+      updatePlayheadDOM();
+      if (typeof updateSweepPlayer === 'function') updateSweepPlayer(false);
+    }
+  }
+
+  // Global Keyboard Shortcuts
+  window.addEventListener('keydown', handleEditorKeyDown);
+  window.addEventListener('resize', handleEditorResize);
+
+  // Drag, Trim & Marquee listeners
+  window.addEventListener('mousemove', handleDragMove);
+  window.addEventListener('mouseup', handleDragEnd);
+
+  // Initialize Inspector Tabs & Zeilen-Pool Drag-Drop
+  initInspectorTabs();
+}
+
+// ─── Line Selection & Vocal Role Helpers ─────────────────────────────────────
+function isLineSelected(lineId) {
+  if (!lineId) return false;
+  if (Studio.selectedLineIds && Studio.selectedLineIds.has(lineId)) return true;
+  return Studio.selectedLineId === lineId;
+}
+
+function selectLine(lineId) {
+  Studio.selectedLineId = lineId;
+  Studio.selectionAnchorLineId = lineId;
+  Studio.lineSelected = true;
+  if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+  Studio.selectedLineIds.clear();
+  Studio.selectedLineIds.add(lineId);
+
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === lineId);
+  if (line) {
+    Studio.selectedSyllables.clear();
+    (line.rawSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, false, sIdx), {
+        lineId: line.id,
+        isAdlib: false,
+        sIdx,
+        syl,
+      });
+    });
+    (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, true, sIdx), {
+        lineId: line.id,
+        isAdlib: true,
+        sIdx,
+        syl,
+      });
+    });
+    Studio.selectedSylIdx = (line.rawSyllabi && line.rawSyllabi.length > 0) ? 0 : null;
+    Studio.selectedIsAdlib = false;
+  }
+  updateSelectionBadge();
+  renderTimelineLines();
+  renderTimelineSyllables();
+  renderInspectorLines();
+}
+
+function toggleLineSelection(lineId) {
+  if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === lineId);
+  if (!line) return;
+
+  if (Studio.selectedLineIds.has(lineId)) {
+    Studio.selectedLineIds.delete(lineId);
+    (line.rawSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.delete(getSyllableKey(line.id, false, sIdx));
+    });
+    (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.delete(getSyllableKey(line.id, true, sIdx));
+    });
+    if (Studio.selectedLineId === lineId) {
+      const remaining = Array.from(Studio.selectedLineIds);
+      Studio.selectedLineId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+      Studio.lineSelected = remaining.length > 0;
+    }
+  } else {
+    Studio.selectedLineIds.add(lineId);
+    Studio.selectedLineId = lineId;
+    Studio.selectionAnchorLineId = lineId;
+    Studio.lineSelected = true;
+    (line.rawSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, false, sIdx), {
+        lineId: line.id,
+        isAdlib: false,
+        sIdx,
+        syl,
+      });
+    });
+    (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, true, sIdx), {
+        lineId: line.id,
+        isAdlib: true,
+        sIdx,
+        syl,
+      });
+    });
+  }
+
+  updateSelectionBadge();
+  renderTimelineLines();
+  renderTimelineSyllables();
+  renderInspectorLines();
+}
+
+function rangeSelectLines(targetLineId) {
+  const lyrics = getActiveLyrics();
+  const lines = lyrics.lines || [];
+  if (lines.length === 0) return;
+
+  if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+  const anchorId = Studio.selectionAnchorLineId || Studio.selectedLineId || (lines[0] ? lines[0].id : null);
+  const startIdx = lines.findIndex(l => l.id === anchorId);
+  const endIdx = lines.findIndex(l => l.id === targetLineId);
+
+  if (startIdx === -1 || endIdx === -1) {
+    selectLine(targetLineId);
+    return;
+  }
+
+  const minIdx = Math.min(startIdx, endIdx);
+  const maxIdx = Math.max(startIdx, endIdx);
+
+  Studio.selectedLineIds.clear();
+  Studio.selectedSyllables.clear();
+
+  for (let i = minIdx; i <= maxIdx; i++) {
+    const l = lines[i];
+    Studio.selectedLineIds.add(l.id);
+    (l.rawSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(l.id, false, sIdx), {
+        lineId: l.id,
+        isAdlib: false,
+        sIdx,
+        syl,
+      });
+    });
+    (l.adlibSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(l.id, true, sIdx), {
+        lineId: l.id,
+        isAdlib: true,
+        sIdx,
+        syl,
+      });
+    });
+  }
+
+  Studio.selectedLineId = targetLineId;
+  Studio.lineSelected = true;
+
+  updateSelectionBadge();
+  renderTimelineLines();
+  renderTimelineSyllables();
+  renderInspectorLines();
+}
+
+function toggleSingerAgent(newAgent) {
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === Studio.selectedLineId);
+  if (!line) return;
+
+  pushHistory();
+  line.agent = newAgent || (line.agent === 'v2' ? 'v1' : 'v2');
+  line.side = line.agent === 'v2' ? 'left' : 'right';
+  line.laneIndex = line.agent === 'v2' ? 1 : 0;
+  
+  (line.rawSyllabi || []).forEach(s => {
+    if (s.lane === undefined || s.lane === 0 || s.lane === 1) {
+      s.lane = line.agent === 'v2' ? 1 : 0;
+    }
+  });
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Voice set to ${line.agent.toUpperCase()} (${line.side}).`, 'success');
+}
+
+function getLaneLabel(laneIdx) {
+  if (laneIdx === 2) return 'A1';
+  if (laneIdx === 3) return 'A2';
+  return `L${(laneIdx || 0) + 1}`;
+}
+
+function getLaneName(laneIdx) {
+  if (laneIdx === 1) return 'Lane 2 (Duet)';
+  if (laneIdx === 2) return 'Lane 3 (Ad-Lib 1)';
+  if (laneIdx === 3) return 'Lane 4 (Ad-Lib 2)';
+  return 'Lane 1 (Lead)';
+}
+
+function getLineDisplayText(line) {
+  if (!line) return '';
+  const mainT = line.text || '';
+  const adlibT = line.adlib ? (line.adlib.startsWith('(') ? line.adlib : `(${line.adlib})`) : '';
+  if (mainT && adlibT) return `${mainT} ${adlibT}`;
+  return mainT || adlibT || '';
+}
+
+function parseLineTextAndAdlib(input) {
+  if (!input) return { text: '', adlib: null };
+  const trimmed = input.trim();
+  const m = trimmed.match(/^(.*?)\s*[\(\[](.*?)[\)\]]\s*$/);
+  if (m) {
+    const main = m[1].trim();
+    const adlib = m[2].trim();
+    if (!main && adlib) {
+      return { text: '', adlib: adlib };
+    }
+    return { text: main, adlib: adlib };
+  }
+  return { text: trimmed, adlib: null };
+}
+
+function joinSyllablesToText(syllabi) {
+  if (!syllabi || !syllabi.length) return '';
+  let res = '';
+  syllabi.forEach((s, idx) => {
+    let t = s.text || '';
+    res += t;
+    if (!t.endsWith(' ') && !t.endsWith('-') && !s.isSubSyllable && idx < syllabi.length - 1) {
+      const next = syllabi[idx + 1];
+      if (next && !next.isSubSyllable) {
+        res += ' ';
+      }
+    }
+  });
+  return res.trim();
+}
+
+function normalizeSyllablesFromLineText(line) {
+  if (!line || !line.text) return;
+  const rawText = line.text.trim();
+  const allS = line.rawSyllabi || [];
+  if (!allS.length) return;
+
+  let searchPos = 0;
+  allS.forEach((s, idx) => {
+    const cleanWord = (s.text || '').trim();
+    if (!cleanWord) return;
+    let matchIdx = rawText.indexOf(cleanWord, searchPos);
+    if (matchIdx === -1) {
+      matchIdx = rawText.toLowerCase().indexOf(cleanWord.toLowerCase(), searchPos);
+    }
+    if (matchIdx !== -1) {
+      const afterIdx = matchIdx + cleanWord.length;
+      searchPos = afterIdx;
+      if (afterIdx < rawText.length && rawText[afterIdx] === ' ') {
+        s.text = cleanWord + ' ';
+        s.isSubSyllable = false;
+        while (searchPos < rawText.length && rawText[searchPos] === ' ') searchPos++;
+      } else if (idx < allS.length - 1) {
+        s.text = cleanWord;
+        s.isSubSyllable = true;
+      } else {
+        s.text = cleanWord;
+        s.isSubSyllable = false;
+      }
+    } else {
+      if (idx < allS.length - 1 && !s.text.endsWith(' ') && !s.isSubSyllable) {
+        s.text = cleanWord + ' ';
+      }
+    }
+  });
+}
+
+function splitLineAdlibIntoSeparateTrack(lineId) {
+  const targetId = lineId || Studio.selectedLineId;
+  if (!targetId) return;
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === targetId);
+  if (!line || !line.adlib) {
+    toast('No ad-lib detected in this line.', 'info');
+    return;
+  }
+
+  pushHistory();
+  const adlibText = line.adlib;
+  const adlibSyls = line.adlibSyllabi || [];
+  
+  // Clean parent line
+  line.adlib = null;
+  line.adlibSyllabi = [];
+
+  // Create new line on Lane 3 (ADLIB 1, laneIndex: 2)
+  const newLine = {
+    id: `L-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    start: line.start,
+    end: line.end,
+    text: '',
+    adlib: adlibText,
+    rawSyllabi: [],
+    adlibSyllabi: adlibSyls,
+    agent: line.agent || 'v1',
+    side: line.side || 'right',
+    isSimultaneous: true,
+    laneIndex: 2, // ADLIB 1
+  };
+
+  lyrics.lines.push(newLine);
+  lyrics.lines.sort((a, b) => a.start - b.start);
+  Studio.selectedLineId = newLine.id;
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast('Ad-lib extracted to dedicated lane (ADLIB 1)!', 'success');
+}
+
+function toggleLineLane(lineId) {
+  const targetId = lineId || Studio.selectedLineId;
+  if (!targetId) return;
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === targetId);
+  if (!line) return;
+
+  pushHistory();
+  const oldLane = line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0);
+  const newLane = (oldLane + 1) % 4;
+  line.laneIndex = newLane;
+
+  if (newLane >= 2) {
+    if (!line.adlib && line.text) line.adlib = line.text;
+  }
+
+  // Move line's syllables that were aligned with the old lane
+  (line.rawSyllabi || []).forEach(s => {
+    if (s.lane === oldLane || s.lane === undefined) {
+      s.lane = newLane;
+    }
+  });
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Moved line to ${getLaneName(newLane)} (${getLaneLabel(newLane)})`, 'success');
+}
+
+function setLineLane(targetLane, lineId) {
+  const targetId = lineId || Studio.selectedLineId;
+  if (!targetId) return;
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === targetId);
+  if (!line) return;
+  const oldLane = line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0);
+  if (oldLane === targetLane) return;
+
+  pushHistory();
+  line.laneIndex = targetLane;
+  if (targetLane >= 2) {
+    if (!line.adlib && line.text) line.adlib = line.text;
+  }
+  (line.rawSyllabi || []).forEach(s => {
+    if (s.lane === oldLane || s.lane === undefined) {
+      s.lane = targetLane;
+    }
+  });
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Moved line to ${getLaneName(targetLane)} (${getLaneLabel(targetLane)})`, 'success');
+}
+
+function toggleAdlibRole() {
+  const lyrics = getActiveLyrics();
+  const lines = lyrics.lines || [];
+
+  // 1. If individual syllables are selected: Toggle them between Main (Lane 0/1) and Ad-lib (Lane 3)
+  if (Studio.selectedSyllables && Studio.selectedSyllables.size > 0) {
+    pushHistory();
+    let toggledCount = 0;
+    let anyBecameAdlib = false;
+
+    // Group selected syllables by line
+    const selItems = Array.from(Studio.selectedSyllables.values());
+    selItems.forEach(item => {
+      const line = lines.find(l => l.id === item.lineId);
+      if (!line) return;
+
+      if (!line.rawSyllabi) line.rawSyllabi = [];
+      if (!line.adlibSyllabi) line.adlibSyllabi = [];
+
+      if (item.isAdlib) {
+        // Was Adlib -> Move back to Raw/Main Vocal (Lane 0 or 1)
+        const idx = line.adlibSyllabi.findIndex(s => s === item.syl || (s.time === item.syl.time && s.text === item.syl.text));
+        if (idx >= 0) {
+          const [syl] = line.adlibSyllabi.splice(idx, 1);
+          syl.lane = line.agent === 'v2' ? 1 : 0;
+          line.rawSyllabi.push(syl);
+          line.rawSyllabi.sort((a, b) => a.time - b.time);
+          toggledCount++;
+        }
+      } else {
+        // Was Raw -> Move to Adlib (Lane 3, Ebene 4)
+        const idx = line.rawSyllabi.findIndex(s => s === item.syl || (s.time === item.syl.time && s.text === item.syl.text));
+        if (idx >= 0) {
+          const [syl] = line.rawSyllabi.splice(idx, 1);
+          syl.lane = 3;
+          line.adlibSyllabi.push(syl);
+          line.adlibSyllabi.sort((a, b) => a.time - b.time);
+          anyBecameAdlib = true;
+          toggledCount++;
+        }
+      }
+
+      // Re-derive line.text and line.adlib from syllables if present
+      if (line.rawSyllabi.length > 0) {
+        line.text = line.rawSyllabi.map(s => s.text).join('').trim();
+      } else if (line.adlibSyllabi.length > 0) {
+        line.text = '';
+      }
+      if (line.adlibSyllabi.length > 0) {
+        line.adlib = line.adlibSyllabi.map(s => s.text).join('').trim();
+      } else {
+        line.adlib = null;
+      }
+    });
+
+    clearSyllableSelection();
+    saveActiveTrackToBackend();
+    refreshEditorViews();
+    toast(`${toggledCount} syllable(s) marked as ${anyBecameAdlib ? 'Ad-lib (Lane 4)' : 'Lead vocal'} [B].`, 'success');
+    return;
+  }
+
+  // 2. Fallback: If a whole line is selected
+  const line = lines.find(l => l.id === Studio.selectedLineId);
+  if (!line) return;
+
+  pushHistory();
+  if (line.adlib && (!line.text || line.rawSyllabi.length === 0)) {
+    // Revert whole line from Ad-lib to Lead
+    line.text = line.adlib;
+    line.adlib = null;
+    line.rawSyllabi = (line.adlibSyllabi || []).map(s => ({ ...s, lane: line.agent === 'v2' ? 1 : 0 }));
+    line.adlibSyllabi = [];
+  } else {
+    // Convert whole line to Ad-lib
+    line.adlib = line.text || line.adlib;
+    line.text = '';
+    line.adlibSyllabi = (line.rawSyllabi || []).map(s => ({ ...s, lane: 3 }));
+    line.rawSyllabi = [];
+  }
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(line.adlib ? 'Line marked as ad-lib (x-bg) [B].' : 'Line marked as lead vocal [B].', 'success');
+}
+
+function toggleSnapping() {
+  Studio.snapEnabled = !Studio.snapEnabled;
+  updateSnapBtnUI();
+  toast(Studio.snapEnabled ? 'Magnetic Snapping: ON [S]' : 'Magnetic Snapping: OFF [S]', 'success');
+}
+
+function updateSnapBtnUI() {
+  const btn = document.getElementById('snapToggleBtn');
+  if (btn) {
+    btn.classList.toggle('active', !!Studio.snapEnabled);
+  }
+}
+
+// ─── Audio Initialization ───────────────────────────────────────────────────
+function initStudioAudio(url) {
+  if (Studio.audio) {
+    Studio.audio.pause();
+    Studio.audio.src = '';
+  }
+
+  Studio.audio = new Audio(url);
+  Studio.audio.volume = Studio.volume;
+  Studio.audio.playbackRate = Studio.playbackRate || 1.0;
+  Studio.duration = 0;
+  Studio.currentTime = 0;
+  Studio.isPlaying = false;
+  Studio.wavePeaks = null;
+  Studio.audioBuf = null;
+  Studio.vocalsWavePeaks = null;
+  Studio.vocalsAudioBuf = null;
+
+  Studio.audio.addEventListener('loadedmetadata', () => {
+    Studio.duration = Studio.audio.duration;
+    const durEl = document.getElementById('durationDisplay');
+    if (durEl) durEl.textContent = fmt(Studio.duration);
+
+    layoutTimeline();
+    decodeAudioForWaveform(url);
+  });
+
+  Studio.audio.addEventListener('timeupdate', () => {
+    if (!Studio.audio || Studio.audio.paused) {
+      Studio.currentTime = Studio.audio.currentTime;
+      const timeEl = document.getElementById('currentTimeDisplay');
+      if (timeEl) timeEl.textContent = fmt(Studio.currentTime);
+      updatePlayheadDOM();
+      if (typeof updateSweepPlayer === 'function') updateSweepPlayer(false);
+    }
+  });
+
+  Studio.audio.addEventListener('play',  () => setPlayUI(true));
+  Studio.audio.addEventListener('pause', () => setPlayUI(false));
+  Studio.audio.addEventListener('ended', () => setPlayUI(false));
+
+  startStudioRAF();
+}
+
+function togglePlayPause() {
+  if (!Studio.audio) return;
+  if (Studio.isPlaying) Studio.audio.pause();
+  else Studio.audio.play().catch(() => {});
+}
+
+function setPlayUI(playing) {
+  Studio.isPlaying = playing;
+  document.getElementById('iconPlay')?.classList.toggle('hidden', playing);
+  document.getElementById('iconPause')?.classList.toggle('hidden', !playing);
+  if (typeof updateSweepPlayer === 'function') updateSweepPlayer(false);
+}
+
+function seekAudio(delta) {
+  if (!Studio.audio || !Studio.duration) return;
+  Studio.audio.currentTime = Math.max(0, Math.min(Studio.duration, Studio.audio.currentTime + delta));
+}
+
+// ─── Timeline Layout & Tiled Canvas Rendering (No Blur, No Canvas Crash) ───
+const TILE_WIDTH = 2048;
+
+function getTimelineTotalWidth() {
+  const scrollArea = document.getElementById('tlScrollArea');
+  const clientW = scrollArea ? scrollArea.clientWidth : 800;
+  return Math.max(Math.ceil((Studio.duration || 10) * Studio.pps), clientW, 800);
+}
+
+function layoutTimeline() {
+  const totalW = getTimelineTotalWidth();
+  const inner  = document.getElementById('tlInner');
+
+  if (inner) inner.style.width = totalW + 'px';
+  renderRulerTiles();
+  renderWaveformTiles();
+
+  renderTimelineLines();
+  renderTimelineSyllables();
+  updatePlayheadDOM();
+}
+
+function handleEditorResize() {
+  if (document.getElementById('mainWorkspace')?.classList.contains('hidden')) return;
+  layoutTimeline();
+}
+
+function applyZoom(newPps, anchorTime = null, viewportOffsetPx = null) {
+  const scrollArea = document.getElementById('tlScrollArea');
+  const oldPps = Studio.pps;
+  const targetPps = Math.max(20, Math.min(1600, newPps));
+  if (Math.abs(targetPps - oldPps) < 0.001) return;
+
+  let curTime;
+  let relOffset;
+
+  if (scrollArea) {
+    if (anchorTime !== null) {
+      curTime = anchorTime;
+      relOffset = (viewportOffsetPx !== null) ? viewportOffsetPx : (curTime * oldPps - scrollArea.scrollLeft);
+    } else {
+      // Default: anchor around viewport center
+      curTime = (scrollArea.scrollLeft + scrollArea.clientWidth / 2) / oldPps;
+      relOffset = scrollArea.clientWidth / 2;
+    }
+  } else {
+    curTime = anchorTime !== null ? anchorTime : ((Studio.audio ? Studio.audio.currentTime : Studio.currentTime) || 0);
+    relOffset = 0;
+  }
+
+  Studio.pps = targetPps;
+  const slider = document.getElementById('zoomSlider');
+  if (slider) slider.value = Studio.pps;
+  const label = document.getElementById('zoomLabel');
+  if (label) label.textContent = `${Math.round(Studio.pps / 80 * 100)}%`;
+
+  if (Studio.audioBuf)       Studio.wavePeaks       = computePeaksFromBuffer(Studio.audioBuf);
+  if (Studio.vocalsAudioBuf) Studio.vocalsWavePeaks = computePeaksFromBuffer(Studio.vocalsAudioBuf);
+
+  layoutTimeline();
+
+  if (scrollArea && relOffset !== null) {
+    const newAnchorPx = curTime * Studio.pps;
+    scrollArea.scrollLeft = Math.max(0, newAnchorPx - relOffset);
+  }
+}
+
+// ─── Waveform Decoding & Tiled GPU Canvas Drawing ───────────────────────────
+async function decodeAudioForWaveform(url) {
+  try {
+    const { peaks, duration, audioBuf } = await decodeAudioPeaks(url, Studio.pps);
+    Studio.audioBuf  = audioBuf;
+    Studio.wavePeaks = peaks;
+    renderWaveformTiles();
+  } catch (e) {
+    console.warn('Waveform decode failed:', e);
+  }
+}
+
+function computePeaksFromBuffer(buf) {
+  if (!buf) return null;
+  const totalPx = Math.ceil((Studio.duration || buf.duration) * Studio.pps);
+  const data    = buf.getChannelData(0);
+  const sRate   = buf.sampleRate;
+  const peaks   = new Float32Array(totalPx);
+  for (let px = 0; px < totalPx; px++) {
+    const iS = Math.floor(px * sRate / Studio.pps);
+    const iE = Math.min(Math.ceil((px + 1) * sRate / Studio.pps), data.length);
+    let mx = 0;
+    for (let i = iS; i < iE; i++) {
+      const v = Math.abs(data[i]);
+      if (v > mx) mx = v;
+    }
+    peaks[px] = mx;
+  }
+  return peaks;
+}
+
+function renderRulerTiles() {
+  const container = document.getElementById('tlRulerTrack');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const totalW = getTimelineTotalWidth();
+  const numTiles = Math.ceil(totalW / TILE_WIDTH);
+  const pps = Studio.pps;
+  const h = 26;
+
+  const step = pps >= 800 ? 0.25 : pps >= 400 ? 0.5 : pps >= 160 ? 1 : pps >= 60 ? 5 : pps >= 25 ? 10 : 30;
+
+  for (let tileIdx = 0; tileIdx < numTiles; tileIdx++) {
+    const tileStartX = tileIdx * TILE_WIDTH;
+    const tileW = Math.min(TILE_WIDTH, totalW - tileStartX);
+    if (tileW <= 0) break;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = tileW;
+    canvas.height = h;
+    canvas.style.width = `${tileW}px`;
+    canvas.style.height = `${h}px`;
+
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#1c1c1c';
+    ctx.fillRect(0, 0, tileW, h);
+
+    ctx.font = '10px JetBrains Mono, Consolas, monospace';
+    ctx.textBaseline = 'middle';
+
+    const startSec = Math.max(0, Math.floor((tileStartX / pps) / step) * step);
+    const endSec   = Math.min(Studio.duration || 100000, ((tileStartX + tileW) / pps) + step);
+
+    for (let t = startSec; t <= endSec; t += step) {
+      const vx = Math.round(t * pps - tileStartX);
+      if (vx < 0 || vx >= tileW) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(vx + 0.5, h - 7);
+      ctx.lineTo(vx + 0.5, h);
+      ctx.strokeStyle = '#383838';
+      ctx.stroke();
+
+      const m = Math.floor(t / 60);
+      const s = Math.floor(t % 60);
+      const ms = Math.round((t % 1) * 100);
+      const label = step < 1 ? `${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+      ctx.fillStyle = '#8e8e8e';
+      ctx.fillText(label, vx + 4, h / 2);
+    }
+
+    container.appendChild(canvas);
+  }
+}
+
+function renderWaveformTiles() {
+  const container = document.getElementById('tlWaveTrack');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const totalW = getTimelineTotalWidth();
+  const numTiles = Math.ceil(totalW / TILE_WIDTH);
+  const h = 72;
+  const mid = h / 2;
+
+  const peaks = (Studio.useVocalsWave && Studio.vocalsWavePeaks) ? Studio.vocalsWavePeaks : Studio.wavePeaks;
+  const isVoc = Studio.useVocalsWave && Studio.vocalsWavePeaks;
+  const fillColor = isVoc ? '#00b4d8' : '#1473e6';
+
+  for (let tileIdx = 0; tileIdx < numTiles; tileIdx++) {
+    const tileStartX = tileIdx * TILE_WIDTH;
+    const tileW = Math.min(TILE_WIDTH, totalW - tileStartX);
+    if (tileW <= 0) break;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = tileW;
+    canvas.height = h;
+    canvas.style.width = `${tileW}px`;
+    canvas.style.height = `${h}px`;
+
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#121212';
+    ctx.fillRect(0, 0, tileW, h);
+
+    if (peaks && peaks.length > 0) {
+      ctx.fillStyle = fillColor;
+      for (let vx = 0; vx < tileW; vx++) {
+        const px = tileStartX + vx;
+        if (px >= peaks.length) break;
+        const amp = peaks[px];
+        if (amp <= 0.001) continue;
+        const bh = Math.max(1, amp * h * 0.92);
+        ctx.fillRect(vx, mid - bh / 2, 1, bh);
+      }
+    }
+
+    container.appendChild(canvas);
+  }
+}
+
+var lastRenderedSecFormatted = '';
+
+function updatePlayheadDOM() {
+  const ph = document.getElementById('tlPlayhead');
+  if (!ph) return;
+  const x = (Studio.currentTime || 0) * Studio.pps;
+  ph.style.transform = `translate3d(${x}px, 0, 0)`;
+
+  if (Studio.isPlaying) {
+    const scroll = document.getElementById('tlScrollArea');
+    if (scroll) {
+      const visW = scroll.clientWidth;
+      const left = scroll.scrollLeft;
+      if (x > left + visW * 0.85) scroll.scrollLeft = x - visW * 0.3;
+      if (x < left) scroll.scrollLeft = Math.max(0, x - 40);
+    }
+  }
+}
+
+function startStudioRAF() {
+  if (Studio.rafId) cancelAnimationFrame(Studio.rafId);
+
+  function loop() {
+    if (Studio.audio && !Studio.audio.paused) {
+      Studio.currentTime = Studio.audio.currentTime;
+      const formatted = fmt(Studio.currentTime);
+      if (formatted !== lastRenderedSecFormatted) {
+        lastRenderedSecFormatted = formatted;
+        const timeEl = document.getElementById('currentTimeDisplay');
+        if (timeEl) timeEl.textContent = formatted;
+      }
+      updatePlayheadDOM();
+      if (typeof updateSweepPlayer === 'function') {
+        updateSweepPlayer(false);
+      }
+    }
+    Studio.rafId = requestAnimationFrame(loop);
+  }
+
+  Studio.rafId = requestAnimationFrame(loop);
+}
+
+// ─── Multi-Lane Timeline Rendering (4 Lanes: Lead, Duett, Adlib 1, Adlib 2) ───
+function renderTimelineLines() {
+  const track = document.getElementById('tlLinesTrack');
+  if (!track) return;
+  track.innerHTML = '';
+
+  const lyrics = getActiveLyrics();
+  const lines  = lyrics.lines || [];
+
+  // Add 3 horizontal lane guide lines for the 4 lanes (at 38px, 76px, 114px)
+  for (let g = 1; g < 4; g++) {
+    const guide = document.createElement('div');
+    guide.className = 'tl-lines-track-guide';
+    guide.style.top = `${g * 38}px`;
+    track.appendChild(guide);
+  }
+
+  lines.forEach(line => {
+    const x = line.start * Studio.pps;
+    const w = Math.max(6, (line.end - line.start) * Studio.pps);
+    const trackLane = line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0);
+    const clampedLane = Math.max(0, Math.min(3, trackLane));
+    const topPx = clampedLane * 38 + 2;
+    const blockH = 34;
+
+    const div = document.createElement('div');
+    div.className = 'tl-line-block' +
+      (isLineSelected(line.id) ? ' selected' : '') +
+      (line.agent === 'v2' ? ' duet-v2' : '') +
+      ` lane-offset-${clampedLane}`;
+    div.style.left   = `${x}px`;
+    div.style.width  = `${w}px`;
+    div.style.top    = `${topPx}px`;
+    div.style.height = `${blockH}px`;
+    div.dataset.lineId = line.id;
+
+    // Lane badge (E1 / E2 / A1 / A2) - Clickable to cycle between all 4 lanes
+    const badge = document.createElement('span');
+    const badgeClass = clampedLane === 0 ? 'badge-l1' : (clampedLane === 1 ? 'badge-l2' : (clampedLane === 2 ? 'badge-l3' : 'badge-l4'));
+    badge.className = `tl-line-lane-badge ${badgeClass}`;
+    badge.textContent = getLaneLabel(clampedLane);
+    badge.title = `Click to switch to next lane (${getLaneName((clampedLane + 1) % 4)})`;
+    badge.addEventListener('mousedown', e => e.stopPropagation());
+    badge.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleLineLane(line.id);
+    });
+    div.appendChild(badge);
+
+    const span = document.createElement('span');
+    span.className = 'tl-line-text';
+    const mainT = line.text || '';
+    const adlibT = line.adlib ? (line.adlib.startsWith('(') ? line.adlib : `(${line.adlib})`) : '';
+    if (mainT && adlibT) {
+      span.innerHTML = `${escHTML(mainT)} <span class="tl-line-adlib-part" style="color:#c084fc; font-style:italic;">${escHTML(adlibT)}</span>`;
+    } else if (adlibT) {
+      span.innerHTML = `<span class="tl-line-adlib-part" style="color:#c084fc; font-style:italic;">${escHTML(adlibT)}</span>`;
+    } else {
+      span.textContent = mainT || '…';
+    }
+    div.appendChild(span);
+
+    // Left & Right Trim Handles
+    const el = document.createElement('div'); el.className = 'tl-edge tl-edge-l';
+    const er = document.createElement('div'); er.className = 'tl-edge tl-edge-r';
+    div.appendChild(el); div.appendChild(er);
+
+    el.addEventListener('mousedown', e => {
+      selectLine(line.id);
+      startDrag(e, 'line', line.id, null, 'left');
+    });
+    el.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      const allS = [...(line.rawSyllabi || []), ...(line.adlibSyllabi || [])];
+      if (allS.length > 0) {
+        pushHistory();
+        const minT = Math.min(...allS.map(s => s.time)) / 1000;
+        line.start = Math.round(minT * 1000) / 1000;
+        saveActiveTrackToBackend();
+        renderTimelineLines();
+        renderInspectorLines();
+        toast('Line start snapped to first syllable.', 'success');
+      }
+    });
+
+    er.addEventListener('mousedown', e => {
+      selectLine(line.id);
+      startDrag(e, 'line', line.id, null, 'right');
+    });
+    er.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      const allS = [...(line.rawSyllabi || []), ...(line.adlibSyllabi || [])];
+      if (allS.length > 0) {
+        pushHistory();
+        const maxT = Math.max(...allS.map(s => s.time + s.duration)) / 1000;
+        line.end = Math.round(maxT * 1000) / 1000;
+        saveActiveTrackToBackend();
+        renderTimelineLines();
+        renderInspectorLines();
+        toast('Line end snapped to last syllable.', 'success');
+      }
+    });
+
+    div.addEventListener('mousedown', e => {
+      if (e.target.classList.contains('tl-edge')) return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleLineSelection(line.id);
+        return;
+      }
+      if (e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        rangeSelectLines(line.id);
+        return;
+      }
+      if (!isLineSelected(line.id)) {
+        selectLine(line.id);
+      }
+      startDrag(e, 'line', line.id, null, 'move');
+    });
+
+    div.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      editLineText(line.id, div);
+    });
+    track.appendChild(div);
+  });
+}
+
+// ─── Syllable Selection Helpers ─────────────────────────────────────────────
+function getSyllableKey(lineId, isAdlib, sIdx) {
+  return `${lineId}__${isAdlib ? 'ad' : 'raw'}__${sIdx}`;
+}
+
+function isSyllableSelected(lineId, isAdlib, sIdx) {
+  return Studio.selectedSyllables.has(getSyllableKey(lineId, isAdlib, sIdx));
+}
+
+function selectSingleSyllable(lineId, sIdx, isAdlib) {
+  Studio.lineSelected = false;
+  Studio.selectedSyllables.clear();
+  Studio.selectedLineId = lineId;
+  Studio.selectedSylIdx = sIdx;
+  Studio.selectedIsAdlib = isAdlib;
+
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === lineId);
+  if (line) {
+    const list = isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+    const syl = list ? list[sIdx] : null;
+    if (syl) {
+      Studio.selectedSyllables.set(getSyllableKey(lineId, isAdlib, sIdx), { lineId, isAdlib, sIdx, syl });
+    }
+  }
+
+  updateSelectionBadge();
+  renderTimelineSyllables();
+}
+
+function toggleSyllableSelection(lineId, sIdx, isAdlib) {
+  Studio.lineSelected = false;
+  const key = getSyllableKey(lineId, isAdlib, sIdx);
+  if (Studio.selectedSyllables.has(key)) {
+    Studio.selectedSyllables.delete(key);
+    if (Studio.selectedSyllables.size === 0) {
+      Studio.selectedSylIdx = null;
+    }
+  } else {
+    const lyrics = getActiveLyrics();
+    const line = (lyrics.lines || []).find(l => l.id === lineId);
+    if (line) {
+      const list = isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+      const syl = list ? list[sIdx] : null;
+      if (syl) {
+        Studio.selectedSyllables.set(key, { lineId, isAdlib, sIdx, syl });
+        Studio.selectedLineId = lineId;
+        Studio.selectedSylIdx = sIdx;
+        Studio.selectedIsAdlib = isAdlib;
+      }
+    }
+  }
+
+  updateSelectionBadge();
+  renderTimelineSyllables();
+}
+
+function clearSyllableSelection() {
+  Studio.selectedSyllables.clear();
+  Studio.selectedSylIdx = null;
+  Studio.selectedIsAdlib = false;
+  updateSelectionBadge();
+  renderTimelineSyllables();
+}
+
+function selectAllSyllables() {
+  Studio.selectedSyllables.clear();
+  if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+  Studio.selectedLineIds.clear();
+  const lyrics = getActiveLyrics();
+  (lyrics.lines || []).forEach(line => {
+    Studio.selectedLineIds.add(line.id);
+    (line.rawSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, false, sIdx), { lineId: line.id, isAdlib: false, sIdx, syl });
+    });
+    (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(line.id, true, sIdx), { lineId: line.id, isAdlib: true, sIdx, syl });
+    });
+  });
+  if (lyrics.lines && lyrics.lines.length > 0) {
+    Studio.selectedLineId = lyrics.lines[0].id;
+    Studio.lineSelected = true;
+  }
+  updateSelectionBadge();
+  renderTimelineLines();
+  renderTimelineSyllables();
+  renderInspectorLines();
+  toast(`${Studio.selectedLineIds.size} lines (${Studio.selectedSyllables.size} syllables) selected (Ctrl+A)`, 'success');
+}
+
+function updateSelectionBadge() {
+  const badge = document.getElementById('tlSelectionBadge');
+  if (!badge) return;
+  const lineCount = Studio.selectedLineIds ? Studio.selectedLineIds.size : (Studio.selectedLineId ? 1 : 0);
+  const sylCount = Studio.selectedSyllables.size;
+
+  if (lineCount > 1) {
+    badge.textContent = `${lineCount} lines (${sylCount} syl)`;
+    badge.classList.remove('hidden');
+  } else if (sylCount > 0) {
+    badge.textContent = `${sylCount} selected`;
+    badge.classList.remove('hidden');
+  } else if (lineCount === 1) {
+    badge.textContent = `1 line selected`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function addVocalLane() {
+  Studio.numLanes = (Studio.numLanes || 4) + 1;
+  renderTimelineSyllables();
+  toast(`Lane added (Now ${Studio.numLanes} lanes)`, 'success');
+}
+
+function removeVocalLane() {
+  if ((Studio.numLanes || 4) <= 2) {
+    toast('Minimum 2 lanes required.', 'error');
+    return;
+  }
+  Studio.numLanes = (Studio.numLanes || 4) - 1;
+  renderTimelineSyllables();
+  toast(`Lane removed (${Studio.numLanes} lanes remaining)`, 'success');
+}
+
+// ─── Multi-Lane Timeline Rendering ───────────────────────────────────────────
+function renderTimelineSyllables() {
+  const track = document.getElementById('tlSyllablesTrack');
+  if (!track) return;
+  track.innerHTML = '';
+
+  const lyrics = getActiveLyrics();
+  const lines  = lyrics.lines || [];
+
+  // Determine highest lane in use
+  let maxLane = 0;
+  lines.forEach(l => {
+    (l.rawSyllabi || []).forEach(s => {
+      const ln = s.lane !== undefined ? s.lane : 0;
+      if (ln > maxLane) maxLane = ln;
+    });
+    (l.adlibSyllabi || []).forEach(s => {
+      const ln = s.lane !== undefined ? s.lane : 3;
+      if (ln > maxLane) maxLane = ln;
+    });
+  });
+
+  Studio.numLanes = Math.max(Studio.numLanes || 4, maxLane + 1, 4);
+  const laneH = Studio.laneHeight || 44;
+  const totalH = Studio.numLanes * laneH;
+  track.style.height = `${totalH}px`;
+
+  // Update left labels header
+  const headerCell = document.getElementById('tlLanesHeaderCell');
+  if (headerCell) {
+    headerCell.style.height = `${totalH + 28}px`;
+  }
+  const labelsWrap = document.getElementById('tlLanesLabelsWrap');
+  if (labelsWrap) {
+    labelsWrap.innerHTML = '';
+    const laneNames = ['Lane 1 (Lead)', 'Lane 2 (Duet)', 'Lane 3 (Ad-Lib 1)', 'Lane 4 (Ad-Lib 2)'];
+    for (let i = 0; i < Studio.numLanes; i++) {
+      const lbl = document.createElement('div');
+      lbl.className = `tl-lane-label-item lane-${i}`;
+      lbl.style.height = `${laneH}px`;
+      lbl.textContent = laneNames[i] || `Lane ${i + 1}`;
+      labelsWrap.appendChild(lbl);
+    }
+  }
+
+  // Horizontal lane guide lines
+  for (let i = 1; i < Studio.numLanes; i++) {
+    const guide = document.createElement('div');
+    guide.className = 'tl-lane-guide';
+    guide.style.top = `${i * laneH}px`;
+    track.appendChild(guide);
+  }
+
+  // Render Syllables
+  lines.forEach(line => {
+    // 1. Raw Syllables (Default to lane 0 or assigned lane)
+    (line.rawSyllabi || []).forEach((syl, sIdx) => {
+      const lane = Math.min(Studio.numLanes - 1, syl.lane !== undefined ? syl.lane : 0);
+      const x = (syl.time / 1000) * Studio.pps;
+      const w = Math.max(4, (syl.duration / 1000) * Studio.pps);
+      const isSelected = isSyllableSelected(line.id, false, sIdx);
+
+      const chip = document.createElement('div');
+      chip.className = 'syl-chip' +
+        ` lane-${lane}` +
+        (syl.isSubSyllable ? ' sub-syl' : '') +
+        (line.agent === 'v2' ? ' duet' : '') +
+        (isSelected ? (Studio.selectedSyllables.size > 1 ? ' multi-selected' : ' selected') : '');
+      chip.style.left  = `${x}px`;
+      chip.style.width = `${w}px`;
+      chip.style.top   = `${lane * laneH + 4}px`;
+      chip.dataset.lineId = line.id;
+      chip.dataset.sIdx = sIdx;
+      chip.dataset.isAdlib = '0';
+
+      const span = document.createElement('span');
+      span.className = 'syl-chip-text';
+      span.textContent = syl.text;
+      chip.appendChild(span);
+
+      const el = document.createElement('div'); el.className = 'tl-edge tl-edge-l';
+      const er = document.createElement('div'); er.className = 'tl-edge tl-edge-r';
+      chip.appendChild(el); chip.appendChild(er);
+
+      el.addEventListener('mousedown', e => startDrag(e, 'syl', line.id, sIdx, 'left', false));
+      er.addEventListener('mousedown', e => startDrag(e, 'syl', line.id, sIdx, 'right', false));
+      chip.addEventListener('mousedown', e => {
+        if (e.target.classList.contains('tl-edge')) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSyllableSelection(line.id, sIdx, false);
+          return;
+        }
+        const alreadySelected = isSyllableSelected(line.id, false, sIdx);
+        if (!alreadySelected || Studio.selectedSyllables.size <= 1) {
+          selectSingleSyllable(line.id, sIdx, false);
+        } else {
+          Studio.selectedLineId = line.id;
+          Studio.selectedSylIdx = sIdx;
+          Studio.selectedIsAdlib = false;
+        }
+        startDrag(e, 'syl', line.id, sIdx, 'move', false);
+      });
+      chip.addEventListener('click', e => {
+        if (e.target.classList.contains('tl-edge')) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        selectSingleSyllable(line.id, sIdx, false);
+      });
+      chip.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        editSyllableText(line.id, sIdx, false, chip);
+      });
+      track.appendChild(chip);
+    });
+
+    // 2. Ad-lib Syllables
+    (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+      const lane = syl.lane !== undefined ? syl.lane : Math.min(3, Studio.numLanes - 1);
+      const x = (syl.time / 1000) * Studio.pps;
+      const w = Math.max(4, (syl.duration / 1000) * Studio.pps);
+      const isSelected = isSyllableSelected(line.id, true, sIdx);
+
+      const chip = document.createElement('div');
+      chip.className = 'syl-chip adlib' +
+        ` lane-${lane}` +
+        (isSelected ? (Studio.selectedSyllables.size > 1 ? ' multi-selected' : ' selected') : '');
+      chip.style.left  = `${x}px`;
+      chip.style.width = `${w}px`;
+      chip.style.top   = `${lane * laneH + 4}px`;
+      chip.dataset.lineId = line.id;
+      chip.dataset.sIdx = sIdx;
+      chip.dataset.isAdlib = '1';
+
+      const span = document.createElement('span');
+      span.className = 'syl-chip-text';
+      span.textContent = syl.text;
+      chip.appendChild(span);
+
+      const el = document.createElement('div'); el.className = 'tl-edge tl-edge-l';
+      const er = document.createElement('div'); er.className = 'tl-edge tl-edge-r';
+      chip.appendChild(el); chip.appendChild(er);
+
+      el.addEventListener('mousedown', e => startDrag(e, 'syl', line.id, sIdx, 'left', true));
+      er.addEventListener('mousedown', e => startDrag(e, 'syl', line.id, sIdx, 'right', true));
+      chip.addEventListener('mousedown', e => {
+        if (e.target.classList.contains('tl-edge')) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSyllableSelection(line.id, sIdx, true);
+          return;
+        }
+        const alreadySelected = isSyllableSelected(line.id, true, sIdx);
+        if (!alreadySelected || Studio.selectedSyllables.size <= 1) {
+          selectSingleSyllable(line.id, sIdx, true);
+        } else {
+          Studio.selectedLineId = line.id;
+          Studio.selectedSylIdx = sIdx;
+          Studio.selectedIsAdlib = true;
+        }
+        startDrag(e, 'syl', line.id, sIdx, 'move', true);
+      });
+      chip.addEventListener('click', e => {
+        if (e.target.classList.contains('tl-edge')) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        selectSingleSyllable(line.id, sIdx, true);
+      });
+      chip.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        editSyllableText(line.id, sIdx, true, chip);
+      });
+      track.appendChild(chip);
+    });
+  });
+}
+
+// ─── Marquee Selection Engine (Windows Desktop Style) ──────────────────────
+function handleTimelineMouseDown(e) {
+  // If clicking directly on a chip, line block, or trim handle, let their drag handler proceed
+  if (e.target.closest('.syl-chip') || e.target.closest('.tl-edge') || e.target.closest('.tl-line-block')) return;
+
+  const inner = document.getElementById('tlInner');
+  if (!inner) return;
+
+  const initialKeys = new Set((e.shiftKey || e.ctrlKey || e.metaKey) ? Studio.selectedSyllables.keys() : []);
+  const initialLineIds = new Set((e.shiftKey || e.ctrlKey || e.metaKey) ? (Studio.selectedLineIds || []) : []);
+  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+    Studio.selectedSyllables.clear();
+    if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+    Studio.selectedLineIds.clear();
+    Studio.selectedSylIdx = null;
+    Studio.selectedLineId = null;
+    Studio.lineSelected = false;
+    updateSelectionBadge();
+    renderTimelineSyllables();
+    renderTimelineLines();
+    renderInspectorLines();
+  }
+
+  const innerRect = inner.getBoundingClientRect();
+  const startInnerX = e.clientX - innerRect.left;
+  const startInnerY = e.clientY - innerRect.top;
+
+  Studio.marquee = {
+    active: true,
+    moved: false,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    startInnerX,
+    startInnerY,
+    initialKeys,
+    initialLineIds,
+  };
+}
+
+// ─── Drag & Trim & Multi-Batch Move Engine ──────────────────────────────────
+function startDrag(e, type, lineId, sylIdx, handle, isAdlib = false) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const lyrics = getActiveLyrics();
+  const line   = (lyrics.lines || []).find(l => l.id === lineId);
+  if (!line) return;
+
+  pushHistory();
+
+  if (type === 'line') {
+    const origLane = line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0);
+    Studio.drag = {
+      type: 'line', lineId, handle, startX: e.clientX, startY: e.clientY,
+      origStart: line.start, origEnd: line.end, origLane: origLane,
+      origRawSylls: JSON.parse(JSON.stringify(line.rawSyllabi || [])),
+      origAdlibSylls: JSON.parse(JSON.stringify(line.adlibSyllabi || [])),
+    };
+  } else {
+    // Multi-Syllable Batch Drag
+    const sylList = isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+    const syl = sylList ? sylList[sylIdx] : null;
+    if (!syl) return;
+
+    if (!isSyllableSelected(lineId, isAdlib, sylIdx)) {
+      Studio.selectedSyllables.clear();
+      Studio.selectedSyllables.set(getSyllableKey(lineId, isAdlib, sylIdx), { lineId, isAdlib, sIdx: sylIdx, syl });
+      Studio.selectedLineId = lineId;
+      Studio.selectedSylIdx = sylIdx;
+      Studio.selectedIsAdlib = isAdlib;
+      updateSelectionBadge();
+    }
+
+    const items = [];
+    Studio.selectedSyllables.forEach(item => {
+      const l = (lyrics.lines || []).find(li => li.id === item.lineId);
+      if (!l) return;
+      const list = item.isAdlib ? l.adlibSyllabi : l.rawSyllabi;
+      const s = list ? list[item.sIdx] : null;
+      if (!s) return;
+      const origLane = s.lane !== undefined ? s.lane : (item.isAdlib ? 3 : (l.agent === 'v2' ? 1 : 0));
+      items.push({
+        lineId: item.lineId,
+        isAdlib: item.isAdlib,
+        sIdx: item.sIdx,
+        syl: s,
+        origTime: s.time,
+        origDur: s.duration,
+        origLane: origLane,
+      });
+    });
+
+    Studio.drag = {
+      type: 'syl_multi',
+      handle,
+      startX: e.clientX,
+      startY: e.clientY,
+      items,
+    };
+  }
+}
+
+function handleDragMove(e) {
+  // 1. Handle Marquee Selection (Windows-style rubberband)
+  if (Studio.marquee && Studio.marquee.active) {
+    const dist = Math.hypot(e.clientX - Studio.marquee.startClientX, e.clientY - Studio.marquee.startClientY);
+    if (dist > 3) {
+      Studio.marquee.moved = true;
+    }
+
+    if (Studio.marquee.moved) {
+      const inner = document.getElementById('tlInner');
+      const box = document.getElementById('tlMarqueeBox');
+      if (!inner || !box) return;
+
+      const innerRect = inner.getBoundingClientRect();
+      const curInnerX = e.clientX - innerRect.left;
+      const curInnerY = e.clientY - innerRect.top;
+
+      const x1 = Math.min(Studio.marquee.startInnerX, curInnerX);
+      const y1 = Math.min(Studio.marquee.startInnerY, curInnerY);
+      const w = Math.abs(curInnerX - Studio.marquee.startInnerX);
+      const h = Math.abs(curInnerY - Studio.marquee.startInnerY);
+
+      box.style.left = `${x1}px`;
+      box.style.top = `${y1}px`;
+      box.style.width = `${w}px`;
+      box.style.height = `${h}px`;
+      box.classList.remove('hidden');
+
+      const selLeft   = Math.min(Studio.marquee.startClientX, e.clientX);
+      const selRight  = Math.max(Studio.marquee.startClientX, e.clientX);
+      const selTop    = Math.min(Studio.marquee.startClientY, e.clientY);
+      const selBottom = Math.max(Studio.marquee.startClientY, e.clientY);
+
+      // Test intersection with all chips and line blocks in viewport client coordinates
+      const chips = document.querySelectorAll('.syl-chip');
+      const lineBlocks = document.querySelectorAll('.tl-line-block');
+      const lyrics = getActiveLyrics();
+
+      if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+
+      chips.forEach(chip => {
+        const chipLineId  = chip.dataset.lineId;
+        const chipSIdx    = parseInt(chip.dataset.sIdx, 10);
+        const chipIsAdlib = chip.dataset.isAdlib === '1';
+        const key         = getSyllableKey(chipLineId, chipIsAdlib, chipSIdx);
+
+        const cr = chip.getBoundingClientRect();
+        const intersects = !(cr.right < selLeft || cr.left > selRight || cr.bottom < selTop || cr.top > selBottom);
+
+        if (intersects) {
+          Studio.selectedLineIds.add(chipLineId);
+          if (!Studio.selectedSyllables.has(key)) {
+            const line = (lyrics.lines || []).find(l => l.id === chipLineId);
+            if (line) {
+              const list = chipIsAdlib ? line.adlibSyllabi : line.rawSyllabi;
+              const syl = list ? list[chipSIdx] : null;
+              if (syl) {
+                Studio.selectedSyllables.set(key, { lineId: chipLineId, isAdlib: chipIsAdlib, sIdx: chipSIdx, syl });
+              }
+            }
+          }
+          chip.classList.add('multi-selected');
+          chip.classList.remove('selected');
+        } else {
+          if (!Studio.marquee.initialKeys.has(key)) {
+            Studio.selectedSyllables.delete(key);
+            chip.classList.remove('multi-selected');
+            chip.classList.remove('selected');
+          }
+        }
+      });
+
+      lineBlocks.forEach(blk => {
+        const blkLineId = blk.dataset.lineId;
+        const br = blk.getBoundingClientRect();
+        const intersects = !(br.right < selLeft || br.left > selRight || br.bottom < selTop || br.top > selBottom);
+
+        if (intersects) {
+          Studio.selectedLineIds.add(blkLineId);
+          blk.classList.add('selected');
+          const line = (lyrics.lines || []).find(l => l.id === blkLineId);
+          if (line) {
+            (line.rawSyllabi || []).forEach((syl, sIdx) => {
+              Studio.selectedSyllables.set(getSyllableKey(line.id, false, sIdx), { lineId: line.id, isAdlib: false, sIdx, syl });
+            });
+            (line.adlibSyllabi || []).forEach((syl, sIdx) => {
+              Studio.selectedSyllables.set(getSyllableKey(line.id, true, sIdx), { lineId: line.id, isAdlib: true, sIdx, syl });
+            });
+          }
+        } else {
+          if (!Studio.marquee.initialLineIds || !Studio.marquee.initialLineIds.has(blkLineId)) {
+            const hasSyllableSelected = Array.from(Studio.selectedSyllables.values()).some(s => s.lineId === blkLineId);
+            if (!hasSyllableSelected) {
+              Studio.selectedLineIds.delete(blkLineId);
+              blk.classList.remove('selected');
+            }
+          }
+        }
+      });
+
+      updateSelectionBadge();
+    }
+    return;
+  }
+
+  // 2. Handle Object Dragging
+  if (!Studio.drag) return;
+  const dg = Studio.drag;
+  const rawDeltaSec = (e.clientX - dg.startX) / Studio.pps;
+  let deltaSec = rawDeltaSec;
+  let deltaMs  = Math.round(deltaSec * 1000);
+  const laneH    = Studio.laneHeight || 44;
+  const deltaLane = Math.round((e.clientY - dg.startY) / laneH);
+
+  const lyrics = getActiveLyrics();
+  const snapLineEl = document.getElementById('tlSnapLine');
+  let snappedSec = null;
+
+  // ── Adobe Premiere Magnetic Snapping Engine (Snap Distance + Force Threshold) ──
+  const SNAP_DIST_PX = 12; // Snap radius in screen pixels
+  const snapThresholdSec = SNAP_DIST_PX / Studio.pps;
+
+  if (Studio.snapEnabled && !e.altKey) {
+    // Collect all snap candidate boundaries across the timeline
+    const snapCandidates = [];
+    
+    // Playhead is always a snap target
+    const playheadTime = (Studio.audio ? Studio.audio.currentTime : Studio.currentTime) || 0;
+    snapCandidates.push(playheadTime);
+
+    if (dg.type === 'line') {
+      // 1. Line blocks of other lines & other syllables
+      (lyrics.lines || []).forEach(l => {
+        if (l.id !== dg.lineId) {
+          snapCandidates.push(l.start);
+          snapCandidates.push(l.end);
+          (l.rawSyllabi || []).forEach(s => {
+            snapCandidates.push(s.time / 1000);
+            snapCandidates.push((s.time + s.duration) / 1000);
+          });
+          (l.adlibSyllabi || []).forEach(s => {
+            snapCandidates.push(s.time / 1000);
+            snapCandidates.push((s.time + s.duration) / 1000);
+          });
+        }
+      });
+
+      // 2. Syllables of THIS line (especially for trimming left/right handles to first/last syllable)
+      (dg.origRawSylls || []).forEach(s => {
+        snapCandidates.push(s.time / 1000);
+        snapCandidates.push((s.time + s.duration) / 1000);
+      });
+      (dg.origAdlibSylls || []).forEach(s => {
+        snapCandidates.push(s.time / 1000);
+        snapCandidates.push((s.time + s.duration) / 1000);
+      });
+
+      const lineDur = dg.origEnd - dg.origStart;
+      let rawStart = Math.max(0, dg.origStart + rawDeltaSec);
+      let rawEnd   = rawStart + lineDur;
+
+      if (dg.handle === 'move') {
+        let bestDist = snapThresholdSec;
+        let snapDelta = 0;
+
+        snapCandidates.forEach(cand => {
+          // Snap start edge to candidate
+          const distStart = Math.abs(cand - rawStart);
+          if (distStart < bestDist) {
+            bestDist = distStart;
+            snapDelta = cand - dg.origStart;
+            snappedSec = cand;
+          }
+          // Snap end edge to candidate
+          const distEnd = Math.abs(cand - rawEnd);
+          if (distEnd < bestDist) {
+            bestDist = distEnd;
+            snapDelta = (cand - lineDur) - dg.origStart;
+            snappedSec = cand;
+          }
+        });
+
+        if (snappedSec !== null) {
+          deltaSec = snapDelta;
+          deltaMs  = Math.round(deltaSec * 1000);
+        }
+      } else if (dg.handle === 'left') {
+        let bestDist = snapThresholdSec;
+        snapCandidates.forEach(cand => {
+          const dist = Math.abs(cand - rawStart);
+          if (dist < bestDist && cand < dg.origEnd - 0.05) {
+            bestDist = dist;
+            deltaSec = cand - dg.origStart;
+            snappedSec = cand;
+          }
+        });
+      } else if (dg.handle === 'right') {
+        let bestDist = snapThresholdSec;
+        snapCandidates.forEach(cand => {
+          const dist = Math.abs(cand - rawEnd);
+          if (dist < bestDist && cand > dg.origStart + 0.05) {
+            bestDist = dist;
+            deltaSec = cand - dg.origEnd;
+            snappedSec = cand;
+          }
+        });
+      }
+    } else if (dg.type === 'syl_multi') {
+      // Find drag selection's min and max time bounds
+      let minOrigTime = Infinity;
+      let maxOrigEnd  = -Infinity;
+      const draggedKeys = new Set(dg.items.map(it => getSyllableKey(it.lineId, it.isAdlib, it.sIdx)));
+
+      dg.items.forEach(it => {
+        if (it.origTime < minOrigTime) minOrigTime = it.origTime;
+        if (it.origTime + it.origDur > maxOrigEnd) maxOrigEnd = it.origTime + it.origDur;
+      });
+
+      // Syllables outside selection + line edges + playhead
+      (lyrics.lines || []).forEach(l => {
+        snapCandidates.push(l.start);
+        snapCandidates.push(l.end);
+        (l.rawSyllabi || []).forEach((s, sIdx) => {
+          if (!draggedKeys.has(getSyllableKey(l.id, false, sIdx))) {
+            snapCandidates.push(s.time / 1000);
+            snapCandidates.push((s.time + s.duration) / 1000);
+          }
+        });
+        (l.adlibSyllabi || []).forEach((s, sIdx) => {
+          if (!draggedKeys.has(getSyllableKey(l.id, true, sIdx))) {
+            snapCandidates.push(s.time / 1000);
+            snapCandidates.push((s.time + s.duration) / 1000);
+          }
+        });
+      });
+
+      const rawStartSec = (minOrigTime / 1000) + rawDeltaSec;
+      const rawEndSec   = (maxOrigEnd / 1000) + rawDeltaSec;
+
+      if (dg.handle === 'move') {
+        let bestDist = snapThresholdSec;
+        let snapDelta = 0;
+
+        snapCandidates.forEach(cand => {
+          // Snap leading edge
+          const distStart = Math.abs(cand - rawStartSec);
+          if (distStart < bestDist) {
+            bestDist = distStart;
+            snapDelta = cand - (minOrigTime / 1000);
+            snappedSec = cand;
+          }
+          // Snap trailing edge
+          const distEnd = Math.abs(cand - rawEndSec);
+          if (distEnd < bestDist) {
+            bestDist = distEnd;
+            snapDelta = cand - (maxOrigEnd / 1000);
+            snappedSec = cand;
+          }
+        });
+
+        if (snappedSec !== null) {
+          deltaSec = snapDelta;
+          deltaMs  = Math.round(deltaSec * 1000);
+        }
+      } else if (dg.handle === 'left') {
+        let bestDist = snapThresholdSec;
+        snapCandidates.forEach(cand => {
+          const dist = Math.abs(cand - rawStartSec);
+          if (dist < bestDist) {
+            bestDist = dist;
+            deltaSec = cand - (minOrigTime / 1000);
+            deltaMs  = Math.round(deltaSec * 1000);
+            snappedSec = cand;
+          }
+        });
+      } else if (dg.handle === 'right') {
+        let bestDist = snapThresholdSec;
+        snapCandidates.forEach(cand => {
+          const dist = Math.abs(cand - rawEndSec);
+          if (dist < bestDist) {
+            bestDist = dist;
+            deltaSec = cand - (maxOrigEnd / 1000);
+            deltaMs  = Math.round(deltaSec * 1000);
+            snappedSec = cand;
+          }
+        });
+      }
+    }
+  }
+
+  // Visual magnetic indicator guide line
+  if (snapLineEl) {
+    if (snappedSec !== null) {
+      const snapPx = snappedSec * Studio.pps;
+      snapLineEl.style.left = `${snapPx}px`;
+      snapLineEl.classList.remove('hidden');
+    } else {
+      snapLineEl.classList.add('hidden');
+    }
+  }
+
+  if (dg.type === 'line') {
+    const line = (lyrics.lines || []).find(l => l.id === dg.lineId);
+    if (!line) return;
+
+    if (dg.handle === 'move') {
+      const dur = dg.origEnd - dg.origStart;
+      const newStart = Math.max(0, dg.origStart + deltaSec);
+      line.start = Math.round(newStart * 1000) / 1000;
+      line.end   = Math.round((newStart + dur) * 1000) / 1000;
+      // Shift syllables
+      line.rawSyllabi = dg.origRawSylls.map(s => ({ ...s, time: Math.max(0, s.time + deltaMs) }));
+      line.adlibSyllabi = dg.origAdlibSylls.map(s => ({ ...s, time: Math.max(0, s.time + deltaMs) }));
+
+      // Vertical lane movement for lines (4 Lanes: 0..3)
+      const linesTrack = document.getElementById('tlLinesTrack');
+      if (linesTrack) {
+        const trackRect = linesTrack.getBoundingClientRect();
+        const relY = e.clientY - trackRect.top;
+        const targetLineLane = Math.max(0, Math.min(3, Math.floor(relY / 38)));
+        if (line.laneIndex !== targetLineLane) {
+          const oldLane = line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0);
+          line.laneIndex = targetLineLane;
+          if (targetLineLane >= 2) {
+            if (!line.adlib && line.text) line.adlib = line.text;
+          }
+          // Sync raw syllables that were aligned to the old lane
+          (line.rawSyllabi || []).forEach(s => {
+            if (s.lane === oldLane || s.lane === undefined) {
+              s.lane = targetLineLane;
+            }
+          });
+        }
+      }
+    } else if (dg.handle === 'left') {
+      line.start = Math.round(Math.max(0, Math.min(dg.origEnd - 0.1, dg.origStart + deltaSec)) * 1000) / 1000;
+    } else {
+      line.end = Math.round(Math.max(dg.origStart + 0.1, dg.origEnd + deltaSec) * 1000) / 1000;
+    }
+  } else if (dg.type === 'syl_multi') {
+    dg.items.forEach(item => {
+      if (!item.syl) return;
+      if (dg.handle === 'move') {
+        item.syl.time = Math.max(0, item.origTime + deltaMs);
+        const targetLane = Math.max(0, Math.min((Studio.numLanes || 4) - 1, item.origLane + deltaLane));
+        item.syl.lane = targetLane;
+      } else if (dg.handle === 'left') {
+        const newTime = Math.max(0, item.origTime + deltaMs);
+        const newDur  = Math.max(40, item.origDur - deltaMs);
+        item.syl.time = newTime;
+        item.syl.duration = newDur;
+      } else if (dg.handle === 'right') {
+        item.syl.duration = Math.max(40, item.origDur + deltaMs);
+      }
+    });
+  }
+
+  renderTimelineLines();
+  renderTimelineSyllables();
+}
+
+function handleDragEnd(e) {
+  const snapLineEl = document.getElementById('tlSnapLine');
+  if (snapLineEl) snapLineEl.classList.add('hidden');
+
+  if (Studio.marquee && Studio.marquee.active) {
+    const box = document.getElementById('tlMarqueeBox');
+    if (box) box.classList.add('hidden');
+
+    if (!Studio.marquee.moved && e) {
+      // User performed a simple click on empty timeline area -> Seek playhead
+      const inner = document.getElementById('tlInner');
+      if (inner) {
+        const innerRect = inner.getBoundingClientRect();
+        const clickX = e.clientX - innerRect.left;
+        const seekTime = Math.max(0, Math.min(Studio.duration || 1000, clickX / Studio.pps));
+        if (Studio.audio) {
+          Studio.audio.currentTime = seekTime;
+          Studio.currentTime = seekTime;
+          updatePlayheadDOM();
+          if (typeof updateSweepPlayer === 'function') updateSweepPlayer(false);
+        }
+      }
+    } else if (Studio.marquee.moved) {
+      if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+      Studio.selectedSyllables.forEach(item => {
+        if (item.lineId) Studio.selectedLineIds.add(item.lineId);
+      });
+      Studio.lineSelected = Studio.selectedLineIds.size > 0;
+      if (Studio.selectedLineIds.size > 0 && !Studio.selectedLineId) {
+        Studio.selectedLineId = Array.from(Studio.selectedLineIds)[0];
+      }
+      renderTimelineLines();
+      renderInspectorLines();
+    }
+
+    Studio.marquee = null;
+    updateSelectionBadge();
+    renderTimelineSyllables();
+  }
+
+  if (Studio.drag) {
+    const draggedItems = Studio.drag.items || [];
+    const dragType = Studio.drag.type;
+    Studio.drag = null;
+
+    const lyrics = getActiveLyrics();
+    const lines = lyrics.lines || [];
+
+    // If syllables were dragged, sync between rawSyllabi (Lanes 0, 1, 2) and adlibSyllabi (Lane 3)
+    if (dragType === 'syl_multi' && draggedItems.length > 0) {
+      draggedItems.forEach(item => {
+        const line = lines.find(l => l.id === item.lineId);
+        if (!line) return;
+        if (!line.rawSyllabi) line.rawSyllabi = [];
+        if (!line.adlibSyllabi) line.adlibSyllabi = [];
+
+        const targetLane = item.syl.lane !== undefined ? item.syl.lane : 0;
+        if (targetLane === 3) {
+          // Belongs to Ad-libs
+          const rawIdx = line.rawSyllabi.findIndex(s => s === item.syl);
+          if (rawIdx >= 0) {
+            line.rawSyllabi.splice(rawIdx, 1);
+            if (!line.adlibSyllabi.includes(item.syl)) {
+              line.adlibSyllabi.push(item.syl);
+            }
+          }
+        } else {
+          // Belongs to Main vocals (Lanes 0, 1, 2)
+          const adIdx = line.adlibSyllabi.findIndex(s => s === item.syl);
+          if (adIdx >= 0) {
+            line.adlibSyllabi.splice(adIdx, 1);
+            if (!line.rawSyllabi.includes(item.syl)) {
+              line.rawSyllabi.push(item.syl);
+            }
+          }
+        }
+
+        line.rawSyllabi.sort((a, b) => a.time - b.time);
+        line.adlibSyllabi.sort((a, b) => a.time - b.time);
+
+        if (line.rawSyllabi.length > 0) {
+          line.text = line.rawSyllabi.map(s => s.text).join('').trim();
+        } else if (line.adlibSyllabi.length > 0) {
+          line.text = '';
+        }
+        if (line.adlibSyllabi.length > 0) {
+          line.adlib = line.adlibSyllabi.map(s => s.text).join('').trim();
+        } else {
+          line.adlib = null;
+        }
+      });
+    }
+
+    if (lyrics && lyrics.lines) {
+      deriveLineBoundsFromSyllables(lyrics);
+      lyrics.lines.sort((a, b) => a.start - b.start);
+      for (let i = 1; i < lyrics.lines.length; i++) {
+        lyrics.lines[i].isSimultaneous = lyrics.lines[i].start < lyrics.lines[i - 1].end;
+      }
+    }
+    saveActiveTrackToBackend();
+    renderTimelineLines();
+    renderInspectorLines();
+    if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+  }
+}
+
+// ─── Clipboard Operations (Copy, Paste, Duplicate, Delete) ─────────────────
+function copySelectedSyllables() {
+  const lyrics = getActiveLyrics();
+  const lines = lyrics.lines || [];
+
+  // Collect all unique line IDs across selectedLineIds, selectedSyllables, and selectedLineId
+  const allTargetLineIds = new Set();
+  if (Studio.selectedLineIds && Studio.selectedLineIds.size > 0) {
+    Studio.selectedLineIds.forEach(id => allTargetLineIds.add(id));
+  }
+  if (Studio.selectedSyllables && Studio.selectedSyllables.size > 0) {
+    Studio.selectedSyllables.forEach(item => {
+      if (item.lineId) allTargetLineIds.add(item.lineId);
+    });
+  }
+  if (Studio.selectedLineId) {
+    allTargetLineIds.add(Studio.selectedLineId);
+  }
+
+  const selectedLines = lines.filter(l => allTargetLineIds.has(l.id));
+  if (selectedLines.length === 0) {
+    toast('No lines or syllables selected to copy.', 'error');
+    return;
+  }
+
+  selectedLines.sort((a, b) => a.start - b.start);
+  const minStartMs = Math.round(selectedLines[0].start * 1000);
+
+  const lineGroups = selectedLines.map(l => {
+    const lStartMs = Math.round(l.start * 1000);
+    const lEndMs = Math.round(l.end * 1000);
+
+    const isWholeLineSelected = (Studio.selectedLineIds && Studio.selectedLineIds.has(l.id)) || (Studio.lineSelected && Studio.selectedLineId === l.id);
+
+    let rawSyls = [];
+    let adlibSyls = [];
+
+    if (isWholeLineSelected || Studio.selectedSyllables.size === 0) {
+      rawSyls = (l.rawSyllabi || []).map(s => ({
+        ...s,
+        relTime: s.time - minStartMs,
+        isAdlib: false,
+        lane: s.lane !== undefined ? s.lane : (l.agent === 'v2' ? 1 : 0),
+      }));
+      adlibSyls = (l.adlibSyllabi || []).map(s => ({
+        ...s,
+        relTime: s.time - minStartMs,
+        isAdlib: true,
+        lane: s.lane !== undefined ? s.lane : 3,
+      }));
+    } else {
+      (l.rawSyllabi || []).forEach((s, sIdx) => {
+        if (isSyllableSelected(l.id, false, sIdx)) {
+          rawSyls.push({
+            ...s,
+            relTime: s.time - minStartMs,
+            isAdlib: false,
+            lane: s.lane !== undefined ? s.lane : (l.agent === 'v2' ? 1 : 0),
+          });
+        }
+      });
+      (l.adlibSyllabi || []).forEach((s, sIdx) => {
+        if (isSyllableSelected(l.id, true, sIdx)) {
+          adlibSyls.push({
+            ...s,
+            relTime: s.time - minStartMs,
+            isAdlib: true,
+            lane: s.lane !== undefined ? s.lane : 3,
+          });
+        }
+      });
+      if (rawSyls.length === 0 && adlibSyls.length === 0) {
+        rawSyls = (l.rawSyllabi || []).map(s => ({ ...s, relTime: s.time - minStartMs, isAdlib: false, lane: s.lane !== undefined ? s.lane : (l.agent === 'v2' ? 1 : 0) }));
+        adlibSyls = (l.adlibSyllabi || []).map(s => ({ ...s, relTime: s.time - minStartMs, isAdlib: true, lane: s.lane !== undefined ? s.lane : 3 }));
+      }
+    }
+
+    const allSyls = [...rawSyls, ...adlibSyls].sort((a, b) => a.time - b.time);
+
+    return {
+      origLineId: l.id,
+      agent: l.agent || 'v1',
+      side: l.side || 'right',
+      laneIndex: l.laneIndex !== undefined ? l.laneIndex : (l.agent === 'v2' ? 1 : 0),
+      text: l.text || '',
+      adlib: l.adlib || null,
+      relLineStartMs: lStartMs - minStartMs,
+      relLineEndMs: lEndMs - minStartMs,
+      duration: l.end - l.start,
+      syls: allSyls,
+    };
+  });
+
+  const totalSyls = lineGroups.reduce((acc, grp) => acc + grp.syls.length, 0);
+
+  Studio.clipboard = {
+    type: 'lines',
+    minTime: minStartMs,
+    lineGroups: lineGroups,
+    items: lineGroups.flatMap(grp => grp.syls),
+  };
+
+  toast(`Copied ${lineGroups.length} line(s) (${totalSyls} syllables) [Ctrl+C]`, 'success');
+}
+
+function pasteSyllables() {
+  if (!Studio.clipboard || !Studio.clipboard.lineGroups?.length) {
+    toast('Clipboard is empty. Copy syllables or lines first (Ctrl+C).', 'error');
+    return;
+  }
+
+  const lyrics = getActiveLyrics();
+  if (!lyrics.lines) lyrics.lines = [];
+  pushHistory();
+
+  const playheadSec = Studio.currentTime || 0;
+  const playheadMs = Math.round(playheadSec * 1000);
+
+  Studio.selectedSyllables.clear();
+  if (!Studio.selectedLineIds) Studio.selectedLineIds = new Set();
+  Studio.selectedLineIds.clear();
+
+  let totalPastedSyllables = 0;
+  const newCreatedLines = [];
+
+  Studio.clipboard.lineGroups.forEach((grp, gIdx) => {
+    const rawSyls = [];
+    const adlibSyls = [];
+
+    (grp.syls || []).forEach(s => {
+      const newSyl = {
+        text: s.text,
+        time: playheadMs + s.relTime,
+        duration: s.duration,
+        isSubSyllable: !!s.isSubSyllable,
+        lane: s.lane !== undefined ? s.lane : (s.isAdlib ? 3 : (grp.agent === 'v2' ? 1 : 0)),
+      };
+      if (s.isAdlib || s.lane === 3) {
+        adlibSyls.push(newSyl);
+      } else {
+        rawSyls.push(newSyl);
+      }
+      totalPastedSyllables++;
+    });
+
+    rawSyls.sort((a, b) => a.time - b.time);
+    adlibSyls.sort((a, b) => a.time - b.time);
+
+    let lStart, lEnd;
+    if (grp.relLineStartMs !== undefined && grp.relLineEndMs !== undefined) {
+      lStart = (playheadMs + grp.relLineStartMs) / 1000;
+      lEnd = (playheadMs + grp.relLineEndMs) / 1000;
+    } else {
+      const allStarts = [...rawSyls.map(s => s.time), ...adlibSyls.map(s => s.time)];
+      const allEnds   = [...rawSyls.map(s => s.time + s.duration), ...adlibSyls.map(s => s.time + s.duration)];
+      lStart = allStarts.length > 0 ? (Math.min(...allStarts) / 1000) : (playheadSec + (grp.relLineStart || 0) / 1000);
+      lEnd   = allEnds.length > 0   ? (Math.max(...allEnds) / 1000)   : (lStart + (grp.duration || 3.0));
+    }
+
+    const lineText = rawSyls.length > 0 ? rawSyls.map(s => s.text).join('').trim() : (grp.text || 'New Line');
+    const lineAdlib = adlibSyls.length > 0 ? adlibSyls.map(s => s.text).join('').trim() : grp.adlib;
+
+    const newLine = {
+      id: `L-${Date.now()}-${gIdx}-${Math.random().toString(36).substring(2, 6)}`,
+      start: Math.round(lStart * 1000) / 1000,
+      end: Math.round(lEnd * 1000) / 1000,
+      text: lineText,
+      adlib: lineAdlib,
+      rawSyllabi: rawSyls,
+      adlibSyllabi: adlibSyls,
+      agent: grp.agent || 'v1',
+      side: grp.side || (grp.agent === 'v2' ? 'left' : 'right'),
+      isSimultaneous: false,
+      laneIndex: grp.laneIndex !== undefined ? grp.laneIndex : (grp.agent === 'v2' ? 1 : 0),
+    };
+
+    lyrics.lines.push(newLine);
+    newCreatedLines.push(newLine);
+    Studio.selectedLineIds.add(newLine.id);
+
+    // Select syllables in new line
+    rawSyls.forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(newLine.id, false, sIdx), {
+        lineId: newLine.id, isAdlib: false, sIdx, syl,
+      });
+    });
+    adlibSyls.forEach((syl, sIdx) => {
+      Studio.selectedSyllables.set(getSyllableKey(newLine.id, true, sIdx), {
+        lineId: newLine.id, isAdlib: true, sIdx, syl,
+      });
+    });
+  });
+
+  // Sort all lines by start time
+  lyrics.lines.sort((a, b) => a.start - b.start);
+
+  // Recalculate isSimultaneous flags
+  for (let i = 1; i < lyrics.lines.length; i++) {
+    lyrics.lines[i].isSimultaneous = lyrics.lines[i].start < lyrics.lines[i - 1].end;
+  }
+
+  if (newCreatedLines.length > 0) {
+    Studio.selectedLineId = newCreatedLines[0].id;
+    Studio.lineSelected = true;
+  }
+
+  saveActiveTrackToBackend();
+  updateSelectionBadge();
+  refreshEditorViews();
+  if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+
+  toast(`Pasted ${newCreatedLines.length} line(s) (${totalPastedSyllables} syllables) at ${fmt(playheadSec)} [Ctrl+V]`, 'success');
+}
+
+function duplicateSelectedSyllables() {
+  if (Studio.selectedSyllables.size === 0 && !Studio.selectedLineId && (!Studio.selectedLineIds || Studio.selectedLineIds.size === 0)) {
+    toast('No syllables or lines selected to duplicate.', 'error');
+    return;
+  }
+
+  copySelectedSyllables();
+  if (!Studio.clipboard || !Studio.clipboard.lineGroups?.length) return;
+
+  // Find max end relative time among copied items
+  let maxEndMs = 0;
+  Studio.clipboard.lineGroups.forEach(grp => {
+    const lEnd = grp.relLineEndMs !== undefined ? grp.relLineEndMs : 3000;
+    if (lEnd > maxEndMs) maxEndMs = lEnd;
+    (grp.syls || []).forEach(s => {
+      const sEnd = (s.relTime || 0) + (s.duration || 0);
+      if (sEnd > maxEndMs) maxEndMs = sEnd;
+    });
+  });
+
+  // Calculate new playhead time right after the selection (+100ms gap)
+  const minTime = Studio.clipboard.minTime || 0;
+  Studio.currentTime = Math.round((minTime + maxEndMs + 100)) / 1000;
+  updatePlayheadDOM();
+
+  pasteSyllables();
+  toast('Duplicated syllables/lines (Ctrl+D)', 'success');
+}
+
+function deleteSelectedItems() {
+  const lyrics = getActiveLyrics();
+  if (!lyrics || !lyrics.lines) return;
+
+  pushHistory();
+
+  // 1. Multiple lines selected
+  if (Studio.lineSelected && Studio.selectedLineIds && Studio.selectedLineIds.size > 0) {
+    const idsToDelete = new Set(Studio.selectedLineIds);
+    if (Studio.selectedLineId) idsToDelete.add(Studio.selectedLineId);
+    const beforeCount = lyrics.lines.length;
+    lyrics.lines = lyrics.lines.filter(l => !idsToDelete.has(l.id));
+    const delCount = beforeCount - lyrics.lines.length;
+    Studio.selectedLineIds.clear();
+    Studio.selectedLineId = null;
+    Studio.lineSelected = false;
+    clearSyllableSelection();
+    saveActiveTrackToBackend();
+    refreshEditorViews();
+    toast(`Deleted ${delCount} line(s) and all their syllables.`, 'success');
+    return;
+  }
+
+  // 2. Single line selected
+  if (Studio.lineSelected && Studio.selectedLineId) {
+    const idx = lyrics.lines.findIndex(l => l.id === Studio.selectedLineId);
+    if (idx >= 0) {
+      lyrics.lines.splice(idx, 1);
+      Studio.selectedLineId = null;
+      Studio.lineSelected = false;
+      clearSyllableSelection();
+      saveActiveTrackToBackend();
+      refreshEditorViews();
+      toast('Line and all its syllables deleted.', 'success');
+      return;
+    }
+  }
+
+  // 3. Syllables selected
+  if (Studio.selectedSyllables.size > 0) {
+    const toDelete = new Set();
+    Studio.selectedSyllables.forEach(sel => {
+      if (sel.syl) toDelete.add(sel.syl);
+    });
+
+    let delCount = 0;
+    (lyrics.lines || []).forEach(line => {
+      if (line.rawSyllabi) {
+        const before = line.rawSyllabi.length;
+        line.rawSyllabi = line.rawSyllabi.filter(s => !toDelete.has(s));
+        delCount += (before - line.rawSyllabi.length);
+      }
+      if (line.adlibSyllabi) {
+        const before = line.adlibSyllabi.length;
+        line.adlibSyllabi = line.adlibSyllabi.filter(s => !toDelete.has(s));
+        delCount += (before - line.adlibSyllabi.length);
+      }
+
+      if (line.rawSyllabi && line.rawSyllabi.length > 0) {
+        line.text = line.rawSyllabi.map(s => s.text).join('').trim();
+      } else if (line.adlibSyllabi && line.adlibSyllabi.length > 0) {
+        line.text = '';
+      }
+    });
+
+    clearSyllableSelection();
+    saveActiveTrackToBackend();
+    refreshEditorViews();
+    toast(`Deleted ${delCount} syllable(s).`, 'success');
+    return;
+  }
+
+  if (Studio.selectedLineId) {
+    const idx = lyrics.lines.findIndex(l => l.id === Studio.selectedLineId);
+    if (idx >= 0) {
+      lyrics.lines.splice(idx, 1);
+      Studio.selectedLineId = null;
+      clearSyllableSelection();
+      saveActiveTrackToBackend();
+      refreshEditorViews();
+      toast('Line deleted.', 'success');
+    }
+  }
+}
+
+function deleteSelectedSyllables() {
+  deleteSelectedItems();
+}
+
+// ─── Syllable Splitting & Merging ───────────────────────────────────────────
+function getTargetSyllableForSplit() {
+  const lyrics = getActiveLyrics();
+  const lines = lyrics.lines || [];
+
+  // 1. If Studio.selectedSyllables has exactly 1 entry
+  if (Studio.selectedSyllables && Studio.selectedSyllables.size === 1) {
+    const sel = Array.from(Studio.selectedSyllables.values())[0];
+    const line = lines.find(l => l.id === sel.lineId);
+    if (line) {
+      const list = sel.isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+      if (list && list[sel.sIdx]) {
+        return { line, list, sIdx: sel.sIdx, syl: list[sel.sIdx], isAdlib: sel.isAdlib };
+      }
+    }
+  }
+
+  // 2. Check if playhead is currently inside any syllable (checking selected line first)
+  const tMs = Math.round((Studio.currentTime || 0) * 1000);
+  const targetLines = (Studio.selectedLineId ? lines.filter(l => l.id === Studio.selectedLineId) : lines);
+
+  for (const line of targetLines) {
+    for (let sIdx = 0; sIdx < (line.rawSyllabi || []).length; sIdx++) {
+      const s = line.rawSyllabi[sIdx];
+      if (tMs >= s.time && tMs <= s.time + s.duration) {
+        return { line, list: line.rawSyllabi, sIdx, syl: s, isAdlib: false };
+      }
+    }
+    for (let sIdx = 0; sIdx < (line.adlibSyllabi || []).length; sIdx++) {
+      const s = line.adlibSyllabi[sIdx];
+      if (tMs >= s.time && tMs <= s.time + s.duration) {
+        return { line, list: line.adlibSyllabi, sIdx, syl: s, isAdlib: true };
+      }
+    }
+  }
+
+  // 3. Fallback: check all lines for playhead position
+  if (Studio.selectedLineId) {
+    for (const line of lines) {
+      for (let sIdx = 0; sIdx < (line.rawSyllabi || []).length; sIdx++) {
+        const s = line.rawSyllabi[sIdx];
+        if (tMs >= s.time && tMs <= s.time + s.duration) {
+          return { line, list: line.rawSyllabi, sIdx, syl: s, isAdlib: false };
+        }
+      }
+      for (let sIdx = 0; sIdx < (line.adlibSyllabi || []).length; sIdx++) {
+        const s = line.adlibSyllabi[sIdx];
+        if (tMs >= s.time && tMs <= s.time + s.duration) {
+          return { line, list: line.adlibSyllabi, sIdx, syl: s, isAdlib: true };
+        }
+      }
+    }
+  }
+
+  // 4. Fallback: If Studio.selectedLineId & Studio.selectedSylIdx
+  if (Studio.selectedLineId && Studio.selectedSylIdx !== null) {
+    const line = lines.find(l => l.id === Studio.selectedLineId);
+    if (line) {
+      const list = Studio.selectedIsAdlib ? line.adlibSyllabi : line.rawSyllabi;
+      if (list && list[Studio.selectedSylIdx]) {
+        return { line, list, sIdx: Studio.selectedSylIdx, syl: list[Studio.selectedSylIdx], isAdlib: Studio.selectedIsAdlib };
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseSplitPattern(inputVal, origText) {
+  if (!inputVal) return [];
+  let rawParts = inputVal.trim().split(/[-/|·]+|\s+/).filter(Boolean);
+  if (rawParts.length <= 1) {
+    return rawParts.length === 1 ? [rawParts[0]] : [];
+  }
+
+  // Preserve trailing punctuation / space from original text onto the last part
+  const trailingMatch = (origText || '').match(/[\s,\.!?]+$/);
+  if (trailingMatch) {
+    const trailing = trailingMatch[0];
+    const lastIdx = rawParts.length - 1;
+    if (!rawParts[lastIdx].endsWith(trailing)) {
+      rawParts[lastIdx] = rawParts[lastIdx] + trailing;
+    }
+  }
+  return rawParts;
+}
+
+function calculateSplitSyllables(target, parts, timeMode, playheadMs) {
+  if (!target || !parts || parts.length === 0) return [];
+  const { syl } = target;
+  if (parts.length === 1) {
+    return [{
+      time: syl.time,
+      duration: syl.duration,
+      text: parts[0],
+      lane: syl.lane !== undefined ? syl.lane : 0,
+      isSubSyllable: !!syl.isSubSyllable,
+    }];
+  }
+
+  const result = [];
+  const totalDur = syl.duration;
+
+  if (timeMode === 'playhead' && playheadMs > syl.time && playheadMs < (syl.time + totalDur)) {
+    const dur1 = Math.max(40, playheadMs - syl.time);
+    const durRest = Math.max(40, (syl.time + totalDur) - playheadMs);
+
+    if (parts.length === 2) {
+      result.push({
+        time: syl.time,
+        duration: dur1,
+        text: parts[0],
+        lane: syl.lane !== undefined ? syl.lane : 0,
+        isSubSyllable: !!syl.isSubSyllable,
+      });
+      result.push({
+        time: playheadMs,
+        duration: durRest,
+        text: parts[1],
+        lane: syl.lane !== undefined ? syl.lane : 0,
+        isSubSyllable: true,
+      });
+    } else {
+      result.push({
+        time: syl.time,
+        duration: dur1,
+        text: parts[0],
+        lane: syl.lane !== undefined ? syl.lane : 0,
+        isSubSyllable: !!syl.isSubSyllable,
+      });
+
+      const restParts = parts.slice(1);
+      const totalWeight = restParts.reduce((acc, p) => acc + Math.max(1, p.trim().length), 0);
+      let currTime = playheadMs;
+      restParts.forEach((p, idx) => {
+        const isLast = idx === restParts.length - 1;
+        const dur = isLast
+          ? Math.max(40, (syl.time + totalDur) - currTime)
+          : Math.max(40, Math.round((Math.max(1, p.trim().length) / totalWeight) * durRest));
+        result.push({
+          time: currTime,
+          duration: dur,
+          text: p,
+          lane: syl.lane !== undefined ? syl.lane : 0,
+          isSubSyllable: true,
+        });
+        currTime += dur;
+      });
+    }
+  } else {
+    const weights = parts.map(p => Math.max(1, p.trim().length));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    let currTime = syl.time;
+
+    parts.forEach((p, idx) => {
+      const isLast = idx === parts.length - 1;
+      const dur = isLast
+        ? Math.max(40, (syl.time + totalDur) - currTime)
+        : Math.max(40, Math.round((weights[idx] / totalWeight) * totalDur));
+      result.push({
+        time: currTime,
+        duration: dur,
+        text: p,
+        lane: syl.lane !== undefined ? syl.lane : 0,
+        isSubSyllable: idx === 0 ? (!!syl.isSubSyllable) : true,
+      });
+      currTime += dur;
+    });
+  }
+
+  return result;
+}
+
+function openSplitSyllableModal() {
+  const target = getTargetSyllableForSplit();
+  if (!target) {
+    toast('Select a syllable on the timeline first (or move playhead over it).', 'error');
+    return;
+  }
+
+  Studio.splitTarget = target;
+  const { syl } = target;
+
+  const modal = document.getElementById('splitSyllableModal');
+  if (!modal) return;
+
+  const origDisplay = document.getElementById('splitOrigTextDisplay');
+  const patternInput = document.getElementById('splitPatternInput');
+  const playheadLabel = document.getElementById('splitAtPlayheadLabel');
+  const playheadRadio = document.querySelector('input[name="splitTimeMode"][value="playhead"]');
+  const propRadio = document.querySelector('input[name="splitTimeMode"][value="proportional"]');
+  const playheadTimeVal = document.getElementById('splitPlayheadTimeVal');
+
+  const origText = syl.text || '';
+  if (origDisplay) {
+    origDisplay.textContent = `"${origText}" (${syl.duration}ms @ ${fmt(syl.time / 1000)})`;
+  }
+
+  const cleanText = origText.trim().replace(/[,\.!?]+$/, '');
+  if (patternInput) {
+    if (cleanText.length >= 4 && !cleanText.includes('-')) {
+      const mid = Math.floor(cleanText.length / 2);
+      patternInput.value = `${cleanText.slice(0, mid)}-${cleanText.slice(mid)}`;
+    } else {
+      patternInput.value = cleanText;
+    }
+  }
+
+  const playheadMs = Math.round((Studio.currentTime || 0) * 1000);
+  const isInside = playheadMs > syl.time && playheadMs < (syl.time + syl.duration);
+  if (playheadRadio && propRadio) {
+    if (isInside) {
+      playheadRadio.disabled = false;
+      playheadRadio.checked = true;
+      if (playheadLabel) {
+        playheadLabel.style.opacity = '1';
+        playheadLabel.style.pointerEvents = 'auto';
+      }
+      if (playheadTimeVal) playheadTimeVal.textContent = fmt(playheadMs / 1000);
+    } else {
+      playheadRadio.disabled = true;
+      propRadio.checked = true;
+      if (playheadLabel) {
+        playheadLabel.style.opacity = '0.4';
+        playheadLabel.style.pointerEvents = 'none';
+      }
+      if (playheadTimeVal) playheadTimeVal.textContent = 'outside';
+    }
+  }
+
+  updateSplitPreview();
+  modal.classList.remove('hidden');
+  patternInput?.focus();
+  patternInput?.select();
+}
+
+function closeSplitSyllableModal() {
+  const modal = document.getElementById('splitSyllableModal');
+  if (modal) modal.classList.add('hidden');
+  Studio.splitTarget = null;
+}
+
+function updateSplitPreview() {
+  const target = Studio.splitTarget;
+  if (!target) return;
+
+  const patternInput = document.getElementById('splitPatternInput');
+  const previewContainer = document.getElementById('splitPreviewChips');
+  if (!patternInput || !previewContainer) return;
+
+  const rawPattern = patternInput.value;
+  const parts = parseSplitPattern(rawPattern, target.syl.text);
+
+  const timeMode = document.querySelector('input[name="splitTimeMode"]:checked')?.value || 'proportional';
+  const playheadMs = Math.round((Studio.currentTime || 0) * 1000);
+
+  const calculated = calculateSplitSyllables(target, parts, timeMode, playheadMs);
+
+  previewContainer.innerHTML = '';
+  if (calculated.length <= 1) {
+    previewContainer.innerHTML = '<span style="font-size:12px; color:var(--text-muted);">Type a hyphen (-) or space to split (e.g. bo-dy).</span>';
+    return;
+  }
+
+  calculated.forEach(s => {
+    const chip = document.createElement('div');
+    chip.className = 'split-preview-chip';
+    chip.innerHTML = `
+      <span class="split-preview-chip-text">${escHTML(s.text)}</span>
+      <span class="split-preview-chip-meta">${fmt(s.time / 1000)} · ${s.duration}ms</span>
+    `;
+    previewContainer.appendChild(chip);
+  });
+}
+
+function commitSplitSyllable() {
+  const target = Studio.splitTarget;
+  if (!target) return;
+
+  const patternInput = document.getElementById('splitPatternInput');
+  const rawPattern = patternInput?.value || '';
+  const parts = parseSplitPattern(rawPattern, target.syl.text);
+
+  if (parts.length <= 1) {
+    toast('Specify at least one split point using a hyphen (-) or space (e.g. bo-dy).', 'error');
+    return;
+  }
+
+  const timeMode = document.querySelector('input[name="splitTimeMode"]:checked')?.value || 'proportional';
+  const playheadMs = Math.round((Studio.currentTime || 0) * 1000);
+  const newSyllables = calculateSplitSyllables(target, parts, timeMode, playheadMs);
+
+  if (newSyllables.length <= 1) return;
+
+  pushHistory();
+
+  const { line, list, sIdx } = target;
+  list.splice(sIdx, 1, ...newSyllables);
+
+  closeSplitSyllableModal();
+  clearSyllableSelection();
+
+  selectSingleSyllable(line.id, sIdx, target.isAdlib);
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Split "${target.syl.text.trim()}" into ${newSyllables.length} syllables: [${parts.map(p => p.trim()).join('] [')}]`, 'success');
+}
+
+function mergeSelectedSyllables() {
+  const lyrics = getActiveLyrics();
+  if (Studio.selectedSyllables.size < 2) {
+    toast('Select at least 2 adjacent syllables using Shift+Click to merge.', 'error');
+    return;
+  }
+
+  const selList = Array.from(Studio.selectedSyllables.values());
+  const first = selList[0];
+  const sameLine = selList.every(s => s.lineId === first.lineId && s.isAdlib === first.isAdlib);
+  if (!sameLine) {
+    toast('Only syllables from the same line can be merged.', 'error');
+    return;
+  }
+
+  const line = (lyrics.lines || []).find(l => l.id === first.lineId);
+  if (!line) return;
+  const list = first.isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+  if (!list || list.length < 2) return;
+
+  selList.sort((a, b) => a.sIdx - b.sIdx);
+
+  for (let i = 1; i < selList.length; i++) {
+    if (selList[i].sIdx !== selList[i - 1].sIdx + 1) {
+      toast('Selected syllables must be directly adjacent.', 'error');
+      return;
+    }
+  }
+
+  pushHistory();
+
+  const startIdx = selList[0].sIdx;
+  const count = selList.length;
+  const firstSyl = selList[0].syl;
+  const lastSyl = selList[selList.length - 1].syl;
+
+  const combinedText = selList.map(s => s.syl.text).join('');
+  const combinedDuration = (lastSyl.time + lastSyl.duration) - firstSyl.time;
+
+  const mergedSyl = {
+    time: firstSyl.time,
+    duration: Math.max(50, combinedDuration),
+    text: combinedText,
+    lane: firstSyl.lane !== undefined ? firstSyl.lane : 0,
+    isSubSyllable: !!firstSyl.isSubSyllable,
+  };
+
+  list.splice(startIdx, count, mergedSyl);
+
+  clearSyllableSelection();
+  selectSingleSyllable(line.id, startIdx, first.isAdlib);
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Merged syllables into "${combinedText.trim()}" (J).`, 'success');
+}
+
+function addNewLineAtPlayhead() {
+  const lyrics = getActiveLyrics();
+  pushHistory();
+  const t = Studio.currentTime || 0;
+  const newLine = {
+    id: `L-${Date.now()}`,
+    start: Math.round(t * 1000) / 1000,
+    end: Math.round((t + 3.0) * 1000) / 1000,
+    text: 'New Line',
+    adlib: null,
+    rawSyllabi: [],
+    adlibSyllabi: [],
+    agent: 'v1',
+    side: 'right',
+    isSimultaneous: false,
+    laneIndex: 0,
+  };
+  lyrics.lines.push(newLine);
+  lyrics.lines.sort((a, b) => a.start - b.start);
+  selectLine(newLine.id);
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+}
+
+function sortLinesByTimestamp() {
+  const lyrics = getActiveLyrics();
+  pushHistory();
+  lyrics.lines.sort((a, b) => a.start - b.start);
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast('Sorted lines by timestamp.', 'success');
+}
+
+async function runTrackLineAlignment(explicitLines = null) {
+  const track = getActiveTrack();
+  if (!track || !Studio.project?.id) return;
+  const btn = document.getElementById('alignLinesBtn');
+  const btnQueue = document.getElementById('btnAiAlignQueue');
+  const btnParseAlign = document.getElementById('btnParseAndAlignLines');
+  const lang = Studio.project?.language || document.getElementById('langSelect')?.value || localStorage.getItem('lrc_preferred_lang') || 'de';
+  const whisperModel = document.getElementById('whisperModelSelect')?.value || localStorage.getItem('lrc_whisper_model') || 'large-v3-turbo';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Whisper Line Scan…';
+  }
+  if (btnQueue) {
+    btnQueue.disabled = true;
+    btnQueue.textContent = 'Scanning…';
+  }
+  if (btnParseAlign) {
+    btnParseAlign.disabled = true;
+    btnParseAlign.textContent = 'Scanning…';
+  }
+
+  try {
+    let linesToSend = explicitLines;
+    if (!linesToSend || !linesToSend.length) {
+      if (track.unplacedLines && track.unplacedLines.length > 0) {
+        linesToSend = track.unplacedLines
+          .map(l => {
+            if (typeof l === 'string') return l.trim();
+            const txt = (l?.text || '').trim();
+            const adl = (l?.adlib || '').trim();
+            if (txt && adl && adl !== txt) return `${txt} (${adl})`;
+            if (adl && (!txt || adl === txt)) return `(${adl})`;
+            return txt;
+          })
+          .filter(Boolean);
+      } else if (!track.lyrics?.lines || track.lyrics.lines.length === 0) {
+        const textArea = document.getElementById('textModeLyricsArea');
+        const importArea = document.getElementById('rawLyricsPasteArea');
+        const rawText = (textArea?.value?.trim()) || (importArea?.value?.trim()) || '';
+        if (rawText) {
+          linesToSend = rawText
+            .split(/\r?\n/)
+            .map(l => (typeof cleanLyricsLine === 'function' ? cleanLyricsLine(l) : l.trim()))
+            .filter(l => l && (typeof isSectionHeader === 'function' ? !isSectionHeader(l) : true));
+        }
+      }
+    }
+
+    const payload = {
+      track_id: track.id,
+      language: lang,
+      whisper_model: whisperModel,
+    };
+    if (linesToSend && linesToSend.length) {
+      payload.lines = linesToSend;
+    }
+
+    const resp = await fetch(`/api/project/${Studio.project.id}/align_lines`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || 'Line alignment failed');
+    }
+
+    const data = await resp.json();
+    track.lyrics = data.track.lyrics;
+    track.status = data.track.status;
+    track.unplacedLines = [];
+    Studio.pendingQueueId = null;
+
+    if (data.vocalsUrl) {
+      track.vocalsUrl = data.vocalsUrl;
+      track.vocalsPath = data.track?.vocalsPath || track.vocalsPath;
+      Studio.vocalsUrl = data.vocalsUrl;
+    }
+
+    if (typeof renderAlbumSidebar === 'function') renderAlbumSidebar();
+    setWorkflowMode('line');
+    switchInspectorTab('inspector', true);
+    refreshEditorViews();
+    toast(`Successfully aligned ${data.line_count || 'all'} lines to waveform!`, 'success');
+  } catch (err) {
+    toast(`Line Alignment Error: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Line Scan';
+    }
+    if (btnQueue) {
+      btnQueue.disabled = false;
+      btnQueue.textContent = 'Align Lines';
+    }
+    if (btnParseAlign) {
+      btnParseAlign.disabled = false;
+      btnParseAlign.textContent = 'Paste Text & Align Lines';
+    }
+  }
+}
+
+async function runTrackAlignment() {
+  const track = getActiveTrack();
+  if (!track || !Studio.project?.id) return;
+  const btn = document.getElementById('alignTrackBtn');
+  const mode = document.getElementById('alignModeSelect')?.value || localStorage.getItem('lrc_align_mode') || 'studio_ai';
+  const lang = Studio.project?.language || document.getElementById('langSelect')?.value || localStorage.getItem('lrc_preferred_lang') || 'de';
+  const whisperModel = document.getElementById('whisperModelSelect')?.value || localStorage.getItem('lrc_whisper_model') || 'large-v3-turbo';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = mode === 'studio_ai' ? 'Isolating Vocals…' : 'Computing Syllables…';
+  }
+
+  try {
+    if (mode === 'studio_ai') {
+      setTimeout(() => {
+        if (btn && btn.disabled) btn.textContent = 'WhisperX CTC Phoneme Scan…';
+      }, 3000);
+    }
+
+    let explicitLines = null;
+    const existingLines = track.lyrics?.lines || [];
+    const hasTimedLines = existingLines.some(l => (l.end || 0) > (l.start || 0) + 0.1);
+    if (!hasTimedLines) {
+      if (track.unplacedLines && track.unplacedLines.length > 0) {
+        explicitLines = track.unplacedLines
+          .map(l => {
+            if (typeof l === 'string') return l.trim();
+            const txt = (l?.text || '').trim();
+            const adl = (l?.adlib || '').trim();
+            if (txt && adl && adl !== txt) return `${txt} (${adl})`;
+            if (adl && (!txt || adl === txt)) return `(${adl})`;
+            return txt;
+          })
+          .filter(Boolean);
+      } else if (existingLines.length > 0) {
+        explicitLines = existingLines
+          .map(l => {
+            if (typeof l === 'string') return l.trim();
+            const txt = (l?.text || '').trim();
+            const adl = (l?.adlib || '').trim();
+            if (txt && adl && adl !== txt) return `${txt} (${adl})`;
+            if (adl && (!txt || adl === txt)) return `(${adl})`;
+            return txt;
+          })
+          .filter(Boolean);
+      } else {
+        const textArea = document.getElementById('textModeLyricsArea');
+        const importArea = document.getElementById('rawLyricsPasteArea');
+        const rawText = (textArea?.value?.trim()) || (importArea?.value?.trim()) || '';
+        if (rawText) {
+          explicitLines = rawText
+            .split(/\r?\n/)
+            .map(l => (typeof cleanLyricsLine === 'function' ? cleanLyricsLine(l) : l.trim()))
+            .filter(l => l && (typeof isSectionHeader === 'function' ? !isSectionHeader(l) : true));
+        }
+      }
+    }
+
+    const payload = {
+      track_id: track.id,
+      mode: mode,
+      language: lang,
+      use_whisper: mode === 'studio_ai',
+      whisper_model: whisperModel,
+    };
+    if (explicitLines && explicitLines.length > 0) {
+      payload.lines = explicitLines;
+    }
+
+    const resp = await fetch(`/api/project/${Studio.project.id}/align_track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || 'Alignment failed');
+    }
+    const data = await resp.json();
+
+    track.lyrics = data.track.lyrics;
+    track.status = data.track.status;
+    track.unplacedLines = data.track.unplacedLines || [];
+    Studio.pendingQueueId = null;
+    if (data.vocalsUrl) {
+      track.vocalsUrl = data.vocalsUrl;
+      // Pre-decode vocals waveform for the vocals wave button
+      decodeAudioPeaks(data.vocalsUrl, Studio.pps).then(res => {
+        Studio.vocalsAudioBuf = res.audioBuf;
+        Studio.vocalsWavePeaks = res.peaks;
+        toast('Acapella vocals track ready.', 'success');
+      }).catch(() => {});
+    }
+
+    if (typeof renderAlbumSidebar === 'function') renderAlbumSidebar();
+    setWorkflowMode('syllable');
+    refreshEditorViews();
+    toast(mode === 'studio_ai' ? 'Studio syllable alignment completed.' : 'Quick syllable alignment completed.', 'success');
+  } catch (err) {
+    toast(`Alignment Error: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Syllable Scan';
+    }
+  }
+}
+
+// ─── Inline Text Editing ────────────────────────────────────────────────────
+function editLineText(lineId, divEl) {
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === lineId);
+  if (!line) return;
+
+  const currentText = getLineDisplayText(line);
+
+  if (divEl) {
+    const textSpan = divEl.querySelector('.tl-line-text');
+    if (textSpan && !divEl.querySelector('.tl-inline-input')) {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = currentText;
+      inp.className = 'tl-inline-input';
+      textSpan.style.display = 'none';
+      divEl.appendChild(inp);
+      inp.focus();
+      inp.select();
+
+      let committed = false;
+      const commit = () => {
+        if (committed) return;
+        committed = true;
+        const newText = inp.value.trim();
+        if (newText && newText !== currentText) {
+          pushHistory();
+          const parsed = parseLineTextAndAdlib(newText);
+          line.text = parsed.text;
+          line.adlib = parsed.adlib;
+          normalizeSyllablesFromLineText(line);
+          saveActiveTrackToBackend();
+        }
+        refreshEditorViews();
+      };
+
+      inp.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { committed = true; refreshEditorViews(); }
+      });
+      inp.addEventListener('click', e => e.stopPropagation());
+      inp.addEventListener('mousedown', e => e.stopPropagation());
+      inp.addEventListener('blur', commit);
+      return;
+    }
+  }
+
+  // Fallback prompt
+  const newText = prompt('Edit Line Text:', currentText);
+  if (newText === null || newText.trim() === currentText) return;
+
+  pushHistory();
+  if (line.adlib && !line.text) {
+    line.adlib = newText.trim();
+  } else {
+    line.text = newText.trim();
+  }
+  normalizeSyllablesFromLineText(line);
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+}
+
+function editSyllableText(lineId, sylIdx, isAdlib, chipEl) {
+  const lyrics = getActiveLyrics();
+  const line = (lyrics.lines || []).find(l => l.id === lineId);
+  if (!line) return;
+  const list = isAdlib ? line.adlibSyllabi : line.rawSyllabi;
+  const syl = list ? list[sylIdx] : null;
+  if (!syl) return;
+
+  if (chipEl) {
+    const textSpan = chipEl.querySelector('.syl-chip-text');
+    if (textSpan && !chipEl.querySelector('.tl-inline-input')) {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = syl.text;
+      inp.className = 'tl-inline-input';
+      textSpan.style.display = 'none';
+      chipEl.appendChild(inp);
+      inp.focus();
+      inp.select();
+
+      let committed = false;
+      const commit = () => {
+        if (committed) return;
+        committed = true;
+        let newText = inp.value;
+        if (newText !== syl.text) {
+          pushHistory();
+          const nextSyl = list[sylIdx + 1];
+          if (newText.trim() && !newText.endsWith(' ') && !syl.isSubSyllable && sylIdx < list.length - 1) {
+            if (!nextSyl || !nextSyl.isSubSyllable) {
+              newText = newText.trim() + ' ';
+            }
+          }
+          syl.text = newText;
+          if (line.rawSyllabi && line.rawSyllabi.length > 0) {
+            line.text = joinSyllablesToText(line.rawSyllabi);
+          }
+          saveActiveTrackToBackend();
+        }
+        refreshEditorViews();
+      };
+
+      inp.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { committed = true; refreshEditorViews(); }
+      });
+      inp.addEventListener('click', e => e.stopPropagation());
+      inp.addEventListener('mousedown', e => e.stopPropagation());
+      inp.addEventListener('blur', commit);
+      return;
+    }
+  }
+
+  const newText = prompt('Edit Syllable:', syl.text);
+  if (newText === null || newText === syl.text) return;
+
+  pushHistory();
+  syl.text = newText;
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+}
+
+// ─── Inspector Table Rendering ──────────────────────────────────────────────
+function renderInspectorLines() {
+  const list = document.getElementById('inspectorLinesList');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const lyrics = getActiveLyrics();
+  const lines  = lyrics.lines || [];
+
+  lines.forEach((line, idx) => {
+    const row = document.createElement('div');
+    row.className = 'inspector-row' + (isLineSelected(line.id) ? ' active' : '');
+    row.dataset.id = line.id;
+
+    const lLane = Math.max(0, Math.min(3, line.laneIndex !== undefined ? line.laneIndex : (line.agent === 'v2' ? 1 : 0)));
+    const lLabel = getLaneLabel(lLane);
+    const lName = getLaneName(lLane);
+
+    row.innerHTML = `
+      <div class="insp-time-col">
+        <input type="text" class="insp-time-input" value="${fmt(line.start)}" data-field="start">
+      </div>
+      <div class="insp-text-col">
+        <input type="text" class="insp-text-input" value="${escHTML(getLineDisplayText(line))}" placeholder="Enter line text">
+        <div class="insp-syl-badges">
+          ${(line.rawSyllabi || []).map((s, sIdx) => `<span class="insp-syl-pill" data-sidx="${sIdx}" data-adlib="0" title="Click to edit syllable">${escHTML(s.text)}</span>`).join('')}
+          ${(line.adlibSyllabi || []).map((s, sIdx) => `<span class="insp-syl-pill adlib" data-sidx="${sIdx}" data-adlib="1" title="Click to edit ad-lib syllable">${escHTML(s.text)}</span>`).join('')}
+        </div>
+      </div>
+      <div class="insp-role-col">
+        <button class="btn-insp-lane lane-${lLane}" title="Change lane: current ${lName}">${lLabel}</button>
+        <button class="btn-insp-role ${line.agent === 'v2' ? 'duet' : ''}" title="Toggle Singer Agent (v1 / v2)">${line.agent || 'v1'}</button>
+        <button class="btn-insp-bg ${line.adlib ? 'active' : ''}" title="Toggle Ad-lib (x-bg)">BG</button>
+        ${(line.text && line.adlib) ? `<button class="btn-insp-split-adlib" title="Extract ad-lib to dedicated ADLIB 1 lane" style="border:1px solid #8b5cf6; background:rgba(139,92,246,0.15); color:#c084fc; font-size:.64rem; font-weight:700; padding:2px 5px; border-radius:2px; cursor:pointer;">Extract</button>` : ''}
+        <button class="btn-insp-del" title="Delete line" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; font-size:14px; padding:0 4px;" onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='var(--text-muted)'">✕</button>
+      </div>
+    `;
+
+    row.querySelector('.btn-insp-split-adlib')?.addEventListener('click', e => {
+      e.stopPropagation();
+      splitLineAdlibIntoSeparateTrack(line.id);
+    });
+
+    row.querySelector('.btn-insp-del')?.addEventListener('click', e => {
+      e.stopPropagation();
+      pushHistory();
+      const lIdx = (lines || []).findIndex(l => l.id === line.id);
+      if (lIdx >= 0) {
+        lines.splice(lIdx, 1);
+        if (Studio.selectedLineId === line.id) Studio.selectedLineId = null;
+        saveActiveTrackToBackend();
+        refreshEditorViews();
+        toast('Line deleted.', 'success');
+      }
+    });
+
+    const timeInput = row.querySelector('.insp-time-input');
+    timeInput?.addEventListener('click', e => e.stopPropagation());
+    timeInput?.addEventListener('mousedown', e => e.stopPropagation());
+    timeInput?.addEventListener('change', e => {
+      const parts = e.target.value.trim().split(':');
+      let newSec = 0;
+      if (parts.length === 2) {
+        newSec = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+      } else {
+        newSec = parseFloat(parts[0]);
+      }
+      if (isNaN(newSec) || newSec < 0) return;
+
+      pushHistory();
+      const deltaSec = newSec - line.start;
+      const deltaMs = Math.round(deltaSec * 1000);
+      const dur = line.end - line.start;
+      line.start = Math.round(newSec * 1000) / 1000;
+      line.end = Math.round((newSec + dur) * 1000) / 1000;
+
+      (line.rawSyllabi || []).forEach(s => { s.time = Math.max(0, s.time + deltaMs); });
+      (line.adlibSyllabi || []).forEach(s => { s.time = Math.max(0, s.time + deltaMs); });
+
+      const lyrics = getActiveLyrics();
+      if (lyrics && lyrics.lines) {
+        lyrics.lines.sort((a, b) => a.start - b.start);
+      }
+      saveActiveTrackToBackend();
+      refreshEditorViews();
+    });
+
+    const textInput = row.querySelector('.insp-text-input');
+    textInput?.addEventListener('click', e => e.stopPropagation());
+    textInput?.addEventListener('mousedown', e => e.stopPropagation());
+    textInput?.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        textInput.blur();
+      }
+    });
+    textInput?.addEventListener('change', e => {
+      const val = e.target.value.trim();
+      const currentFull = getLineDisplayText(line);
+      if (val === currentFull) return;
+      pushHistory();
+      const parsed = parseLineTextAndAdlib(val);
+      line.text = parsed.text;
+      line.adlib = parsed.adlib;
+      normalizeSyllablesFromLineText(line);
+      saveActiveTrackToBackend();
+      renderTimelineLines();
+      renderTimelineSyllables();
+      if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+    });
+
+    // Syllable Pills click to edit
+    row.querySelectorAll('.insp-syl-pill').forEach(pill => {
+      pill.addEventListener('click', e => {
+        e.stopPropagation();
+        const sIdx = parseInt(pill.dataset.sidx, 10);
+        const isAd = pill.dataset.adlib === '1';
+        const list = isAd ? line.adlibSyllabi : line.rawSyllabi;
+        const syl = list ? list[sIdx] : null;
+        if (!syl) return;
+
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = syl.text;
+        inp.className = 'insp-syl-input';
+        inp.style.cssText = 'width: 52px; font-size: 11px; padding: 0 3px; background: #1c2333; color: #fff; border: 1px solid #3b82f6; border-radius: 2px; outline: none;';
+
+        pill.replaceWith(inp);
+        inp.focus();
+        inp.select();
+
+        let committed = false;
+        const commit = () => {
+          if (committed) return;
+          committed = true;
+          let newVal = inp.value;
+          if (newVal !== syl.text) {
+            pushHistory();
+            const nextSyl = list[sIdx + 1];
+            if (newVal.trim() && !newVal.endsWith(' ') && !syl.isSubSyllable && sIdx < list.length - 1) {
+              if (!nextSyl || !nextSyl.isSubSyllable) {
+                newVal = newVal.trim() + ' ';
+              }
+            }
+            syl.text = newVal;
+            if (line.rawSyllabi && line.rawSyllabi.length > 0) {
+              line.text = joinSyllablesToText(line.rawSyllabi);
+            }
+            saveActiveTrackToBackend();
+            renderTimelineSyllables();
+            if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+          }
+          renderInspectorLines();
+        };
+
+        inp.addEventListener('keydown', ev => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+          else if (ev.key === 'Escape') { committed = true; renderInspectorLines(); }
+        });
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('click', ev => ev.stopPropagation());
+        inp.addEventListener('mousedown', ev => ev.stopPropagation());
+      });
+    });
+
+    row.querySelector('.btn-insp-lane')?.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleLineLane(line.id);
+    });
+
+    row.querySelector('.btn-insp-role').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleSingerAgent(line.agent === 'v2' ? 'v1' : 'v2');
+    });
+
+    row.querySelector('.btn-insp-bg').addEventListener('click', e => {
+      e.stopPropagation();
+      selectLine(line.id);
+      toggleAdlibRole();
+    });
+
+    row.addEventListener('click', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        toggleLineSelection(line.id);
+        return;
+      }
+      if (e.shiftKey) {
+        e.preventDefault();
+        rangeSelectLines(line.id);
+        return;
+      }
+      selectLine(line.id);
+    });
+    list.appendChild(row);
+  });
+}
+
+// ─── Vocals Isolation Controls ──────────────────────────────────────────────
+async function toggleVocalsWave() {
+  const track = getActiveTrack();
+  const vocalsUrl = Studio.vocalsUrl || track?.vocalsUrl;
+  const btn = document.getElementById('waveVocalsBtn');
+  
+  Studio.useVocalsWave = !Studio.useVocalsWave;
+  if (btn) btn.classList.toggle('active', Studio.useVocalsWave);
+
+  if (Studio.useVocalsWave && !Studio.vocalsWavePeaks && vocalsUrl) {
+    toast('Loading vocals waveform…', '');
+    try {
+      const res = await decodeAudioPeaks(vocalsUrl, Studio.pps);
+      Studio.vocalsAudioBuf = res.audioBuf;
+      Studio.vocalsWavePeaks = res.peaks;
+    } catch (e) {}
+  }
+
+  renderWaveformTiles();
+}
+
+async function toggleVocalsAudio() {
+  const track = getActiveTrack();
+  const vocalsUrl = Studio.vocalsUrl || track?.vocalsUrl;
+  const btn = document.getElementById('vocalsAudioBtn');
+
+  if (!vocalsUrl) {
+    toast('No acapella available yet. Run "AI Syllable Scan" first!', 'error');
+    return;
+  }
+
+  Studio.useVocalsAudio = !Studio.useVocalsAudio;
+  if (btn) btn.classList.toggle('active', Studio.useVocalsAudio);
+
+  if (Studio.audio) {
+    const seekTo = Studio.audio.currentTime;
+    const wasPlay = !Studio.audio.paused;
+    Studio.audio.src = Studio.useVocalsAudio ? vocalsUrl : track.audioUrl;
+    Studio.audio.addEventListener('canplay', function onCanPlay() {
+      Studio.audio.removeEventListener('canplay', onCanPlay);
+      Studio.audio.currentTime = seekTo;
+      if (wasPlay) Studio.audio.play().catch(() => {});
+    }, { once: true });
+    Studio.audio.load();
+    toast(Studio.useVocalsAudio ? 'Acapella vocals solo enabled' : 'Master audio enabled', 'success');
+  }
+}
+
+// ─── Keyboard Event Handler ──────────────────────────────────────────────────
+function handleEditorKeyDown(e) {
+  if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (typeof saveAlbumProjectFile === 'function') saveAlbumProjectFile(false);
+    return;
+  }
+
+  const tag = document.activeElement?.tagName;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.code === 'KeyC' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    copySelectedSyllables();
+  } else if (e.code === 'KeyV' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    pasteSyllables();
+  } else if (e.code === 'KeyD' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    duplicateSelectedSyllables();
+  } else if ((e.code === 'KeyX' || e.code === 'KeyK') && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    openSplitSyllableModal();
+  } else if (e.code === 'KeyJ' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    mergeSelectedSyllables();
+  } else if (e.code === 'KeyA' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    selectAllSyllables();
+  } else if (e.code === 'Delete' || e.code === 'Backspace') {
+    if (Studio.selectedSyllables.size > 0 || Studio.selectedLineId || (Studio.selectedLineIds && Studio.selectedLineIds.size > 0)) {
+      e.preventDefault();
+      deleteSelectedItems();
+    }
+  } else if (e.code === 'Escape') {
+    clearSyllableSelection();
+    if (Studio.selectedLineIds) Studio.selectedLineIds.clear();
+    Studio.selectedLineId = null;
+    Studio.lineSelected = false;
+    updateSelectionBadge();
+    renderTimelineLines();
+    renderTimelineSyllables();
+    renderInspectorLines();
+  } else if (e.code === 'KeyS' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    toggleSnapping();
+  } else if (e.code === 'KeyB') {
+    e.preventDefault();
+    toggleAdlibRole();
+  } else if (e.code === 'KeyL' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    toggleLineLane();
+  } else if (e.code === 'ArrowUp' && e.altKey) {
+    e.preventDefault();
+    const l = (getActiveLyrics().lines || []).find(li => li.id === Studio.selectedLineId);
+    const curLane = l ? (l.laneIndex || 0) : 0;
+    setLineLane(Math.max(0, curLane - 1));
+  } else if (e.code === 'ArrowDown' && e.altKey) {
+    e.preventDefault();
+    const l = (getActiveLyrics().lines || []).find(li => li.id === Studio.selectedLineId);
+    const curLane = l ? (l.laneIndex || 0) : 0;
+    setLineLane(Math.min(3, curLane + 1));
+  } else if (e.code === 'Digit1') {
+    e.preventDefault();
+    toggleSingerAgent('v1');
+  } else if (e.code === 'Digit2') {
+    e.preventDefault();
+    toggleSingerAgent('v2');
+  } else if (e.code === 'Enter') {
+    e.preventDefault();
+    if (typeof hasUnplacedQueueLines === 'function' && hasUnplacedQueueLines()) {
+      placeNextQueueLineAtPlayhead();
+    } else {
+      addNewLineAtPlayhead();
+    }
+  } else if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+  } else if (e.code === 'KeyY' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    redo();
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    seekAudio(e.shiftKey ? -10 : -2);
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    seekAudio(e.shiftKey ? 10 : 2);
+  }
+}
+
+// ─── 3-Tab Inspector & Zeilen-Pool (Queue) ──────────────────────────────────
+function initInspectorTabs() {
+  document.getElementById('inspTabInspectorBtn')?.addEventListener('click', () => switchInspectorTab('inspector', true));
+  document.getElementById('inspTabQueueBtn')?.addEventListener('click', () => switchInspectorTab('queue', true));
+  document.getElementById('inspTabImportBtn')?.addEventListener('click', () => switchInspectorTab('import', true));
+
+  document.getElementById('btnParseToQueue')?.addEventListener('click', parseRawLyricsToQueue);
+  document.getElementById('clearQueueBtn')?.addEventListener('click', clearQueueLines);
+  document.getElementById('placeAllQueueBtn')?.addEventListener('click', placeAllQueueLines);
+  document.getElementById('addQueueLineAtPlayheadBtn')?.addEventListener('click', placeNextQueueLineAtPlayhead);
+
+  // Quick AI Align buttons
+  document.getElementById('btnAiAlignQueue')?.addEventListener('click', () => runTrackLineAlignment());
+  document.getElementById('btnParseAndAlignLines')?.addEventListener('click', () => {
+    const area = document.getElementById('rawLyricsPasteArea');
+    if (!area) return;
+    const rawText = area.value.trim();
+    if (!rawText) {
+      toast('Please paste lyrics text first!', 'error');
+      return;
+    }
+    const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !/^\[(Verse|Chorus|Bridge|Hook|Outro|Intro|Part)[^\]]*\]$/i.test(l));
+    area.value = '';
+    runTrackLineAlignment(lines);
+  });
+
+  initTimelineDropZone();
+}
+
+function switchInspectorTab(tabName, isUserClick = false) {
+  Studio.activeInspTab = tabName;
+  if (isUserClick) {
+    Studio.userSelectedTab = true;
+  }
+
+  const btnInsp = document.getElementById('inspTabInspectorBtn');
+  const btnQueue = document.getElementById('inspTabQueueBtn');
+  const btnImport = document.getElementById('inspTabImportBtn');
+
+  const contentInsp = document.getElementById('inspContentInspector');
+  const contentQueue = document.getElementById('inspContentQueue');
+  const contentImport = document.getElementById('inspContentImport');
+
+  btnInsp?.classList.toggle('active', tabName === 'inspector');
+  btnQueue?.classList.toggle('active', tabName === 'queue');
+  btnImport?.classList.toggle('active', tabName === 'import');
+
+  contentInsp?.classList.toggle('active', tabName === 'inspector');
+  contentQueue?.classList.toggle('active', tabName === 'queue');
+  contentImport?.classList.toggle('active', tabName === 'import');
+
+  if (tabName === 'import') {
+    const area = document.getElementById('rawLyricsPasteArea');
+    if (area && !area.value.trim()) {
+      setTimeout(() => area.focus(), 50);
+    }
+  } else if (tabName === 'queue') {
+    renderQueueLines();
+  } else if (tabName === 'inspector') {
+    renderInspectorLines();
+  }
+}
+
+function updateInspectorCounters() {
+  const lyrics = getActiveLyrics();
+  const placedCount = (lyrics.lines || []).length;
+  const track = getActiveTrack();
+  const queueCount = (track?.unplacedLines || []).length;
+
+  const countPlacedEl = document.getElementById('inspLinesCountBadge');
+  const countQueueEl = document.getElementById('inspQueueCountBadge');
+
+  if (countPlacedEl) countPlacedEl.textContent = placedCount;
+  if (countQueueEl) countQueueEl.textContent = queueCount;
+
+  // Auto switch tab if 0 placed lines and user hasn't explicitly clicked a tab
+  if (placedCount === 0 && !Studio.userSelectedTab) {
+    if (queueCount > 0) {
+      switchInspectorTab('queue');
+    } else {
+      switchInspectorTab('import');
+    }
+  }
+}
+
+function parseRawLyricsToQueue() {
+  const area = document.getElementById('rawLyricsPasteArea');
+  if (!area) return;
+  const rawText = area.value;
+  if (!rawText || !rawText.trim()) {
+    toast('Please paste lyrics text first!', 'error');
+    return;
+  }
+
+  const detectAdlibs = document.getElementById('rawDetectAdlibsCheck')?.checked ?? true;
+  const track = getActiveTrack();
+  if (!track) {
+    toast('No active track selected.', 'error');
+    return;
+  }
+
+  track.unplacedLines = track.unplacedLines || [];
+  const rawLines = rawText.split(/\r?\n/);
+
+  let addedCount = 0;
+  rawLines.forEach((rawL, idx) => {
+    const l = cleanLyricsLine(rawL);
+    if (!l || l.length === 0) return; // Strict skip empty lines / spaces
+    if (isSectionHeader(l)) return;   // Strict skip section headers
+
+    let isAdlib = false;
+    let cleanText = l;
+    if (detectAdlibs && ((cleanText.startsWith('(') && cleanText.endsWith(')')) || (cleanText.startsWith('[') && cleanText.endsWith(']')))) {
+      isAdlib = true;
+      cleanText = cleanLyricsLine(cleanText.substring(1, cleanText.length - 1));
+      if (!cleanText || cleanText.length === 0) return;
+    }
+
+    track.unplacedLines.push({
+      id: `Q-${Date.now()}-${Math.random().toString(36).substr(2, 6)}-${idx}`,
+      text: cleanText,
+      adlib: isAdlib ? cleanText : null,
+      agent: 'v1',
+    });
+    addedCount++;
+  });
+
+  if (addedCount === 0) {
+    return toast('No valid text lines found (only empty lines or section headers?).', 'error');
+  }
+
+  area.value = '';
+  Studio.userSelectedTab = true;
+  switchInspectorTab('queue');
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Loaded ${addedCount} lines into Line Pool! (Empty lines ignored)`, 'success');
+}
+
+function renderQueueLines() {
+  const list = document.getElementById('queueLinesList');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const track = getActiveTrack();
+  const queue = sanitizeQueue(track);
+
+  if (queue.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'queue-empty-box';
+    empty.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28" style="opacity:0.4;">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12h6"/><path d="M12 9v6"/>
+      </svg>
+      <div style="font-size:0.80rem; font-weight:600; color:var(--text-2);">The Line Pool is empty</div>
+      <div style="font-size:0.72rem; color:var(--text-3); max-width:240px;">
+        Paste lyrics in <b>"Paste Text"</b> tab to collect unplaced lines here.
+      </div>
+      <button class="btn btn-secondary btn-xs" style="margin-top:6px;" onclick="switchInspectorTab('import', true)">Go to Paste Text</button>
+    `;
+    list.appendChild(empty);
+    return;
+  }
+
+  queue.forEach((item, qIdx) => {
+    const card = document.createElement('div');
+    card.className = 'queue-card' + (item.id === Studio.pendingQueueId ? ' pending' : '');
+    card.draggable = true;
+    card.dataset.queueId = item.id;
+
+    card.innerHTML = `
+      <div class="queue-card-left">
+        <span class="queue-grip-icon" title="Drag and drop onto timeline">⋮⋮</span>
+        <span class="queue-idx-badge">${String(qIdx + 1).padStart(2, '0')}</span>
+        <span class="queue-card-text" title="${escHTML(item.text)}">${escHTML(item.text)}</span>
+        ${item.adlib ? '<span class="queue-adlib-pill">BG</span>' : ''}
+      </div>
+      <div class="queue-card-actions">
+        <button class="btn-queue-stamp" title="Place at playhead [Enter]">+ Playhead</button>
+        <button class="btn-queue-del" title="Remove line from pool">✕</button>
+      </div>
+    `;
+
+    // Click to select as pending line
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-queue-stamp') || e.target.closest('.btn-queue-del')) return;
+      Studio.pendingQueueId = (Studio.pendingQueueId === item.id) ? null : item.id;
+      renderQueueLines();
+    });
+
+    // Button: Place at playhead
+    card.querySelector('.btn-queue-stamp')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      placeQueueLineAtTime(item.id, Studio.currentTime || 0, 0);
+    });
+
+    // Button: Remove from queue
+    card.querySelector('.btn-queue-del')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = queue.findIndex(q => q.id === item.id);
+      if (idx >= 0) {
+        queue.splice(idx, 1);
+        if (Studio.pendingQueueId === item.id) Studio.pendingQueueId = null;
+        saveActiveTrackToBackend();
+        refreshEditorViews();
+      }
+    });
+
+    // HTML5 Drag & Drop
+    card.addEventListener('dragstart', (e) => {
+      card.classList.add('dragging');
+      Studio.pendingQueueId = item.id;
+      e.dataTransfer.setData('text/plain', item.id);
+      e.dataTransfer.effectAllowed = 'copyMove';
+    });
+
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+    });
+
+    list.appendChild(card);
+  });
+}
+
+function clearQueueLines() {
+  const track = getActiveTrack();
+  if (!track || !track.unplacedLines || track.unplacedLines.length === 0) return;
+  if (!confirm('Remove all lines from the Line Pool?')) return;
+  track.unplacedLines = [];
+  Studio.pendingQueueId = null;
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast('Line Pool cleared.', 'success');
+}
+
+function placeQueueLineAtTime(queueId, startSec, laneIndex = 0, explicitDur = null) {
+  const track = getActiveTrack();
+  if (!track || !track.unplacedLines) return;
+
+  const qIdx = track.unplacedLines.findIndex(q => q.id === queueId);
+  if (qIdx === -1) return;
+
+  const item = track.unplacedLines[qIdx];
+  track.unplacedLines.splice(qIdx, 1);
+
+  if (Studio.pendingQueueId === queueId) {
+    Studio.pendingQueueId = track.unplacedLines[0]?.id || null;
+  }
+
+  const lyrics = getActiveLyrics();
+  pushHistory();
+
+  // Natural duration based on word count
+  const words = (item.text || '').split(/\s+/).filter(Boolean);
+  const naturalDur = explicitDur || Math.max(1.8, Math.min(7.5, words.length * 0.45));
+
+  const startT = Math.max(0, Math.round(startSec * 1000) / 1000);
+  const endT = Math.round((startT + naturalDur) * 1000) / 1000;
+
+  const isAdlibLane = laneIndex >= 2;
+  const newLine = {
+    id: `L-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    start: startT,
+    end: endT,
+    text: item.text,
+    adlib: item.adlib || (isAdlibLane ? item.text : null),
+    rawSyllabi: [],
+    adlibSyllabi: [],
+    agent: item.agent || (laneIndex === 1 ? 'v2' : 'v1'),
+    side: laneIndex === 1 ? 'left' : 'right',
+    isSimultaneous: false,
+    laneIndex: laneIndex,
+  };
+
+  lyrics.lines.push(newLine);
+  lyrics.lines.sort((a, b) => a.start - b.start);
+  Studio.selectedLineId = newLine.id;
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  toast(`Placed on ${getLaneName(laneIndex)}: "${item.text.substring(0, 30)}${item.text.length > 30 ? '…' : ''}"`, 'success');
+}
+
+function placeNextQueueLineAtPlayhead() {
+  const track = getActiveTrack();
+  if (!track || !track.unplacedLines || track.unplacedLines.length === 0) {
+    addNewLineAtPlayhead();
+    return;
+  }
+
+  const targetId = Studio.pendingQueueId || track.unplacedLines[0].id;
+  const t = Studio.currentTime || 0;
+  placeQueueLineAtTime(targetId, t, 0);
+}
+
+function hasUnplacedQueueLines() {
+  const track = getActiveTrack();
+  return Boolean(track?.unplacedLines && track.unplacedLines.length > 0);
+}
+
+function placeAllQueueLines() {
+  const track = getActiveTrack();
+  if (!track || !track.unplacedLines || track.unplacedLines.length === 0) {
+    toast('No lines in Line Pool.', 'error');
+    return;
+  }
+
+  const count = track.unplacedLines.length;
+  let curT = Studio.currentTime || 0;
+  const items = [...track.unplacedLines];
+
+  pushHistory();
+  const lyrics = getActiveLyrics();
+
+  items.forEach((item, idx) => {
+    const words = (item.text || '').split(/\s+/).filter(Boolean);
+    const dur = Math.max(1.8, Math.min(6.0, words.length * 0.42));
+    const startT = Math.round(curT * 1000) / 1000;
+    const endT = Math.round((startT + dur) * 1000) / 1000;
+
+    lyrics.lines.push({
+      id: `L-${Date.now()}-${Math.random().toString(36).substr(2, 5)}-${idx}`,
+      start: startT,
+      end: endT,
+      text: item.text,
+      adlib: item.adlib,
+      rawSyllabi: [],
+      adlibSyllabi: [],
+      agent: item.agent || 'v1',
+      side: 'right',
+      isSimultaneous: false,
+      laneIndex: 0,
+    });
+
+    curT = endT + 0.35;
+  });
+
+  track.unplacedLines = [];
+  Studio.pendingQueueId = null;
+  lyrics.lines.sort((a, b) => a.start - b.start);
+
+  saveActiveTrackToBackend();
+  refreshEditorViews();
+  switchInspectorTab('inspector', true);
+  toast(`Placed ${count} lines sequentially on timeline!`, 'success');
+}
+
+function initTimelineDropZone() {
+  const targets = [
+    document.getElementById('tlLinesTrack'),
+    document.getElementById('tlInner'),
+    document.getElementById('tlWaveTrack')
+  ].filter(Boolean);
+
+  const linesTrack = document.getElementById('tlLinesTrack');
+
+  targets.forEach(el => {
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      linesTrack?.classList.add('drag-target-active');
+    });
+
+    el.addEventListener('dragleave', (e) => {
+      if (!e.relatedTarget || !linesTrack?.contains(e.relatedTarget)) {
+        linesTrack?.classList.remove('drag-target-active');
+      }
+    });
+
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      linesTrack?.classList.remove('drag-target-active');
+
+      const queueId = e.dataTransfer.getData('text/plain');
+      if (!queueId) return;
+
+      const tlInner = document.getElementById('tlInner');
+      if (!tlInner) return;
+
+      const rect = tlInner.getBoundingClientRect();
+      const dropX = e.clientX - rect.left;
+      const dropSec = Math.max(0, dropX / Studio.pps);
+
+      let laneIdx = 0;
+      if (linesTrack) {
+        const ltRect = linesTrack.getBoundingClientRect();
+        const relY = e.clientY - ltRect.top;
+        laneIdx = Math.max(0, Math.min(3, Math.floor(relY / 38)));
+      }
+
+      placeQueueLineAtTime(queueId, dropSec, laneIdx);
+    });
+  });
+}
+
+// ─── 3-Step Workflow Mode System (Text -> Lines -> Syllables) ──────────────────
+function setWorkflowMode(mode) {
+  Studio.workflowMode = mode;
+
+  // 1. Update buttons
+  const btnText = document.getElementById('modeBtnText');
+  const btnLine = document.getElementById('modeBtnLine');
+  const btnSyl = document.getElementById('modeBtnSyllable');
+  btnText?.classList.toggle('active', mode === 'text');
+  btnLine?.classList.toggle('active', mode === 'line');
+  btnSyl?.classList.toggle('active', mode === 'syllable');
+
+  // 2. Update workspace container attribute
+  const ws = document.getElementById('mainWorkspace');
+  if (ws) ws.dataset.mode = mode;
+
+  // 3. Mode-specific updates
+  if (mode === 'text') {
+    populateTextModeEditor();
+  } else if (mode === 'line') {
+    layoutTimeline();
+    if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+  } else if (mode === 'syllable') {
+    layoutTimeline();
+    if (typeof updateSweepPlayer === 'function') updateSweepPlayer(true);
+  }
+}
+
+function autoSetWorkflowModeForTrack(track) {
+  if (!track) return;
+  if (track.status === 'syllable_synced') {
+    setWorkflowMode('syllable');
+  } else if (track.status === 'line_synced') {
+    setWorkflowMode('line');
+  } else {
+    setWorkflowMode('text');
+  }
+}
+
+function populateTextModeEditor() {
+  const area = document.getElementById('textModeTextarea');
+  const countEl = document.getElementById('textModeLineCount');
+  if (!area) return;
+
+  const track = getActiveTrack();
+  if (!track) return;
+
+  const existingLines = track.lyrics?.lines || [];
+  const unplaced = track.unplacedLines || [];
+
+  if (existingLines.length > 0) {
+    const textLines = existingLines.map(l => {
+      let t = l.text || '';
+      if (l.adlib) t += ` (${l.adlib})`;
+      return t;
+    });
+    area.value = textLines.join('\n');
+    if (countEl) countEl.textContent = `${textLines.length} Lines`;
+  } else if (unplaced.length > 0) {
+    const textLines = unplaced.map(l => (typeof l === 'string' ? l : (l.text || l.adlib || '')));
+    area.value = textLines.join('\n');
+    if (countEl) countEl.textContent = `${textLines.length} Lines`;
+  } else {
+    if (!area.value.trim()) {
+      if (countEl) countEl.textContent = `0 Lines`;
+    }
+  }
+}
+
