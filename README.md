@@ -1,6 +1,10 @@
 # PANDA MUSIC — Караоке-студия
 
-Один релиз для **Windows и macOS**. Студия синхронизирует текст одного трека с вокалом, экспортирует построчные TTML и LRC, готовит два DOCX после проверки текста и оформляет секции песни для Genius.
+**Бесплатная локальная караоке-студия для артистов.** Мы сделали её для своей работы в PANDA MUSIC и делимся ей, чтобы музыканты могли синхронизировать текст с вокалом и экспортировать TTML и LRC без подписки. Студия также проверяет текст, готовит два DOCX и оформляет секции для Genius. Аудио и тексты обрабатываются на вашем компьютере.
+
+Версию PANDA MUSIC разработал [plawzar](https://github.com/plawzar) на основе [LRCGen](https://github.com/final-wav/LRCGen).
+
+**[Скачать ZIP для Windows и macOS](https://github.com/plawzar/panda-music-karaoke/releases/download/v0.1.0-beta.4/PANDA-MUSIC-Karaoke-Studio-Windows-macOS-v0.1.0-beta.4.zip)**
 
 ![Редактор таймингов PANDA MUSIC с демонстрационным треком](docs/studio-screenshot.png)
 
