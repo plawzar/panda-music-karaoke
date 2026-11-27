@@ -6,15 +6,22 @@ $runtime = Join-Path $root '.runtime'
 $downloads = Join-Path $runtime 'downloads'
 New-Item -ItemType Directory -Path $downloads -Force | Out-Null
 
+function Get-Sha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
 function Save-VerifiedFile($Url, $Destination, $Sha256) {
     if (Test-Path -LiteralPath $Destination) {
-        if ((Get-FileHash -LiteralPath $Destination).Hash -eq $Sha256) { return }
+        if ((Get-Sha256 $Destination) -eq $Sha256) { return }
         throw "Existing download failed verification: $Destination"
     }
     $partial = "$Destination.partial"
     & curl.exe --fail --location --retry 2 --continue-at - --output $partial $Url
     if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
-    if ((Get-FileHash -LiteralPath $partial).Hash -ne $Sha256) {
+    if ((Get-Sha256 $partial) -ne $Sha256) {
         Remove-Item -LiteralPath $partial
         throw "Download did not match its SHA-256 checksum: $Url"
     }
