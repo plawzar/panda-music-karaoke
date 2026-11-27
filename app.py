@@ -295,6 +295,30 @@ def _lyrics_attachment(filename: str, fallback: str) -> str:
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
+def _streaming_timing_error(segments):
+    """Validate the line intervals used by both streaming exports."""
+    intervals = []
+    for number, segment in enumerate(segments, 1):
+        try:
+            start = round(float(segment["start"]) * 1000)
+            end = round(float(segment["end"]) * 1000)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return f"У строки {number} должны быть начало и конец."
+        if start < 0 or start >= end:
+            return f"Проверь начало и конец строки {number}."
+        intervals.append((start, end, number))
+
+    previous_end = 0
+    previous_number = 0
+    for start, end, number in sorted(intervals):
+        if start < previous_end:
+            first, second = sorted((previous_number, number))
+            return f"Скачивание заблокировано. Исправь пересечение строк {first} и {second}."
+        previous_end = end
+        previous_number = number
+    return None
+
+
 @app.post("/api/export")
 async def export_lrc(request: Request):
     data     = await request.json()
@@ -303,6 +327,8 @@ async def export_lrc(request: Request):
     artist   = data.get("artist",   "").strip()
 
     streaming = data.get("profile") == "streaming"
+    if streaming and (error := _streaming_timing_error(segments)):
+        return JSONResponse({"error": error}, status_code=422)
     lines = []
     if not streaming:
         if title:
@@ -1044,19 +1070,42 @@ async def autosave_project(project_id: str, request: Request):
 
 
 
-def _track_audio_path(track: dict) -> Optional[str]:    file_id = track.get("fileId", "")    for ext in ALLOWED_EXTS:        path = Path(f"uploads/{file_id}{ext}")        if path.is_file():            return str(path)    saved_path = track.get("path")    return saved_path if saved_path and Path(saved_path).is_file() else Noneclass TimelineRecheck(BaseModel):    track_id: str    anchor: float = Field(ge=0, allow_inf_nan=False)    from_start: bool    language: str = Field(min_length=2, max_length=16)    lines: list[str] = Field(min_length=1)_recheck_lock = threading.Lock()def _recheck_timeline(audio_path: str, request: TimelineRecheck, use_vocals: bool) -> list[dict]:    ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"    bundled = Path(__file__).resolve().parent / "ffmpeg" / "bin" / ffmpeg_name    with TemporaryDirectory() as folder:        clip = str(Path(folder) / "vocals.wav")        if os.environ.get("PANDA_LIGHTWEIGHT") == "1":            from faster_whisper.audio import decode_audio            import soundfile            sample_rate = 16000            decoded = decode_audio(audio_path, sampling_rate=sample_rate)            soundfile.write(clip, decoded[round(request.anchor * sample_rate):], sample_rate)        else:            subprocess.run([                str(bundled) if bundled.is_file() else "ffmpeg",                "-nostdin", "-v", "error", "-ss", str(request.anchor), "-i", audio_path,                "-vn", "-ac", "1", "-ar", "16000", clip,            ], check=True, capture_output=True)        with _recheck_lock:            aligned = SyllableAligner.align_raw_lines_to_audio(                clip, request.lines, language=request.language, refine_vocal_tails=use_vocals,                matched_only=True, fixed_first_start=request.from_start, prefer_local_turbo=True,            )    offset_ms = round(request.anchor * 1000)    suggestions = []    for line in aligned["lines"]:        for syllable in line["rawSyllabi"] + line["adlibSyllabi"]:            syllable["time"] += offset_ms        suggestions.append({            "index": line["input_index"],            "start": (offset_ms + round(line["start"] * 1000)) / 1000,            "end": (offset_ms + round(line["end"] * 1000)) / 1000,            "rawSyllabi": line["rawSyllabi"],            "adlibSyllabi": line["adlibSyllabi"],        })    return suggestions@app.post("/api/project/{project_id}/recheck_timeline")async def recheck_project_timeline(project_id: str, data: TimelineRecheck):    project = _get_project_data(project_id)    track = next((track for track in (project or {}).get("tracks", []) if track["id"] == data.track_id), None)    if track is None:        return JSONResponse({"error": "Трек не найден."}, status_code=404)    audio_path = _track_audio_path(track)    if not audio_path:        return JSONResponse({"error": "Аудиофайл не найден."}, status_code=404)    duration = track.get("duration") or 0    if (duration and data.anchor >= duration) or any(not line.strip() for line in data.lines):        return JSONResponse({"error": "Проверь отметку времени и текст строк для пересчёта."}, status_code=400)    vocals = track.get("vocalsPath")    use_vocals = bool(vocals and Path(vocals).is_file())    try:        suggestions = await run_in_threadpool(_recheck_timeline, vocals if use_vocals else audio_path, data, use_vocals)    except Exception:        logger.exception("Could not recheck the timeline")        return JSONResponse({"error": "Не удалось перепроверить тайминги. Можно повторить попытку."}, status_code=500)    return {"suggestions": suggestions}def _align_track_result(target_track, audio_path, has_line_timestamps, user_lines,
-                        language, use_whisper, whisper_model, uvr_model_id):
+def _track_audio_path(track: dict) -> Optional[str]:    file_id = track.get("fileId", "")    for ext in ALLOWED_EXTS:        path = Path(f"uploads/{file_id}{ext}")        if path.is_file():            return str(path)    saved_path = track.get("path")    return saved_path if saved_path and Path(saved_path).is_file() else Noneclass TimelineRecheck(BaseModel):    track_id: str    anchor: float = Field(ge=0, allow_inf_nan=False)    from_start: bool    language: str = Field(min_length=2, max_length=16)    lines: list[str] = Field(min_length=1)def _recheck_timeline(audio_path: str, request: TimelineRecheck, use_vocals: bool, *, scratch_dir=None) -> list[dict]:    ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"    bundled = Path(__file__).resolve().parent / "ffmpeg" / "bin" / ffmpeg_name    with TemporaryDirectory(dir=scratch_dir) as folder:        clip = str(Path(folder) / "vocals.wav")        if os.environ.get("PANDA_LIGHTWEIGHT") == "1":            from faster_whisper.audio import decode_audio            import soundfile            sample_rate = 16000            decoded = decode_audio(audio_path, sampling_rate=sample_rate)            soundfile.write(clip, decoded[round(request.anchor * sample_rate):], sample_rate)        else:            subprocess.run([                str(bundled) if bundled.is_file() else "ffmpeg",                "-nostdin", "-v", "error", "-ss", str(request.anchor), "-i", audio_path,                "-vn", "-ac", "1", "-ar", "16000", clip,            ], check=True, capture_output=True)        aligned = SyllableAligner.align_raw_lines_to_audio(            clip, request.lines, language=request.language, refine_vocal_tails=use_vocals,            matched_only=True, fixed_first_start=request.from_start, prefer_local_turbo=True,        )    offset_ms = round(request.anchor * 1000)    suggestions = []    for line in aligned["lines"]:        for syllable in line["rawSyllabi"] + line["adlibSyllabi"]:            syllable["time"] += offset_ms        suggestions.append({            "index": line["input_index"],            "start": (offset_ms + round(line["start"] * 1000)) / 1000,            "end": (offset_ms + round(line["end"] * 1000)) / 1000,            "rawSyllabi": line["rawSyllabi"],            "adlibSyllabi": line["adlibSyllabi"],        })    return suggestions@app.post("/api/project/{project_id}/recheck_timeline")async def recheck_project_timeline(project_id: str, data: TimelineRecheck, request: Request):    project = _get_project_data(project_id)    track = next((track for track in (project or {}).get("tracks", []) if track["id"] == data.track_id), None)    if track is None:        return JSONResponse({"error": "Трек не найден."}, status_code=404)    audio_path = _track_audio_path(track)    if not audio_path:        return JSONResponse({"error": "Аудиофайл не найден."}, status_code=404)    duration = track.get("duration") or 0    if (duration and data.anchor >= duration) or any(not line.strip() for line in data.lines):        return JSONResponse({"error": "Проверь отметку времени и текст строк для пересчёта."}, status_code=400)    vocals = track.get("vocalsPath")    use_vocals = bool(vocals and Path(vocals).is_file() and track.get("alignmentAudio") != "mix")    try:        suggestions = await _cancellable_worker(            request, _write_recheck_result, (vocals if use_vocals else audio_path, data, use_vocals),        )        if suggestions is None:            return Response(status_code=499)    except Exception:        logger.exception("Could not recheck the timeline")        return JSONResponse({"error": "Не удалось перепроверить тайминги. Можно повторить попытку."}, status_code=500)    return {"suggestions": suggestions}def _precise_alignment(audio_path, align_audio_path, user_lines, language, whisper_model):
+    lightweight = os.environ.get("PANDA_LIGHTWEIGHT") == "1"
+    attempts = [(align_audio_path, "large-v3-turbo" if lightweight and align_audio_path != audio_path else whisper_model)]
+    attempts.extend([(audio_path, whisper_model), (align_audio_path, whisper_model), (audio_path, "large-v3-turbo")])
+    best = None
+    best_score = (-1, -1)
+    source = audio_path
+    for candidate_audio, model in dict.fromkeys(attempts):
+        result = SyllableAligner.align_raw_lines_to_audio(
+            candidate_audio, user_lines, language=language, whisper_model=model,
+            refine_vocal_tails=candidate_audio != audio_path,
+        )
+        meta = result["meta"]
+        score = (meta["matchedLineCount"], meta.get("exactWordMatches", 0))
+        if score > best_score:
+            best, source, best_score = result, candidate_audio, score
+        if score[0] == len(user_lines):
+            break
+    return best, source
+
+
+def _align_track_result(target_track, audio_path, has_line_timestamps, user_lines,
+                        language, use_whisper, whisper_model, uvr_model_id, quality=False, *, scratch_dir=None):
+    directml_vocals = os.environ.get("PANDA_VOCAL_DIRECTML") == "1"
+    mac_vocals = quality and os.environ.get("PANDA_MAC_VOCALS") == "1"
     align_audio_path = audio_path
     cached_vocals = target_track.get("vocalsPath")
     if cached_vocals and Path(cached_vocals).exists():
         print(f"[AI Studio Syllables] Verwende gecachtes Acapella: {cached_vocals}", flush=True)
         align_audio_path = cached_vocals
-    elif os.environ.get("PANDA_LIGHTWEIGHT") != "1":
+    elif os.environ.get("PANDA_LIGHTWEIGHT") != "1" or directml_vocals or mac_vocals:
         try:
             print(f"[AI Studio Syllables] Schritt 1/2: Isoliere Gesangsspur (UVR-MDX-Net) fuer Silben-Erkennung...", flush=True)
             job_id = str(uuid.uuid4())
             jobs[job_id] = {"status": "running", "progress": 10, "message": "Isolating vocals for syllables..."}
-            vocals_path = _run_vocal_separation(job_id, audio_path, uvr_model_id)
+            vocals_path = _run_vocal_separation(job_id, audio_path, uvr_model_id, scratch_dir=scratch_dir)
             if vocals_path and Path(vocals_path).exists() and vocals_path != audio_path:
                 target_track["vocalsPath"] = vocals_path
                 target_track["vocalsUrl"] = f"/api/audio/{Path(vocals_path).stem}"
@@ -1076,13 +1125,25 @@ def _track_audio_path(track: dict) -> Optional[str]:    file_id = track.get("fi
         )
     else:
         print(f"[AI Studio] Step 2/2: No prior Line Scan detected -> Running automatic Line + Syllable Alignment ({len(user_lines)} lines)...", flush=True)
-        raw_aligned = SyllableAligner.align_raw_lines_to_audio(
-            audio_path=align_audio_path,
-            user_lines=user_lines,
-            language=language or "en",
-            whisper_model=whisper_model or "base",
-            refine_vocal_tails=align_audio_path != audio_path,
-        )
+        if quality:
+            raw_aligned, align_audio_path = _precise_alignment(
+                audio_path, align_audio_path, user_lines, language or "en", whisper_model or "base",
+            )
+            if raw_aligned["meta"]["matchedLineCount"] == 0:
+                return target_track
+        else:
+            raw_aligned = SyllableAligner.align_raw_lines_to_audio(
+                audio_path=align_audio_path, user_lines=user_lines, language=language or "en",
+                whisper_model=whisper_model or "base", refine_vocal_tails=align_audio_path != audio_path,
+            )
+        if directml_vocals and not quality:
+            if align_audio_path != audio_path and raw_aligned["meta"]["matchedLineCount"] == 0:
+                logger.info("No lyrics matched on the vocal stem. Retrying alignment on the original mix.")
+                raw_aligned = SyllableAligner.align_raw_lines_to_audio(
+                    audio_path, user_lines, language=language or "en", whisper_model=whisper_model or "base",
+                )
+                align_audio_path = audio_path
+
         aligned_lyrics = {
             "meta": {
                 **(target_track.get("lyrics") or {}).get("meta", {}),
@@ -1095,21 +1156,28 @@ def _track_audio_path(track: dict) -> Optional[str]:    file_id = track.get("fi
         }
         target_track["unplacedLines"] = []
 
+    if directml_vocals or quality:
+        target_track["alignmentAudio"] = "vocals" if align_audio_path != audio_path else "mix"
     target_track["lyrics"] = aligned_lyrics
     target_track["status"] = "syllable_synced"
     return target_track
 
 
 def _write_alignment_result(output, args):
-    result = _align_track_result(*args)
+    result = _align_track_result(*args, scratch_dir=Path(output).parent)
     Path(output).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
 
-async def _cancellable_alignment(request, args):
-    with TemporaryDirectory() as folder:
-        output = Path(folder) / "alignment.json"
+def _write_recheck_result(output, args):
+    result = _recheck_timeline(*args, scratch_dir=Path(output).parent)
+    Path(output).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+
+
+async def _cancellable_worker(request, target, args):
+    with TemporaryDirectory(dir=Path("uploads").resolve()) as folder:
+        output = Path(folder) / "result.json"
         worker = multiprocessing.get_context("spawn").Process(
-            target=_write_alignment_result, args=(str(output), args), daemon=True,
+            target=target, args=(str(output), args), daemon=True,
         )
         worker.start()
         try:
@@ -1199,10 +1267,10 @@ async def align_project_track(project_id: str, request: Request):
     print(f"[AI Studio] Mode: {mode.upper()} | Language: {language} | Whisper: {use_whisper}", flush=True)
 
     args = (target_track, audio_path, has_line_timestamps, user_lines,
-            language, use_whisper, whisper_model, uvr_model_id)
+            language, use_whisper, whisper_model, uvr_model_id, data.get("quality", mode == "studio_ai") is True)
     if data.get("cancellable") is True:
         try:
-            aligned_track = await _cancellable_alignment(request, args)
+            aligned_track = await _cancellable_worker(request, _write_alignment_result, args)
         except Exception:
             logger.exception("Could not align the studio track")
             return JSONResponse({"error": "Не удалось синхронизировать трек."}, status_code=500)
@@ -1381,6 +1449,8 @@ async def export_ttml_endpoint(request: Request):
     album = data.get("album", "")
 
     if data.get("profile") == "streaming":
+        if error := _streaming_timing_error(lyrics.get("lines", [])):
+            return JSONResponse({"error": error}, status_code=422)
         ttml_xml = TTMLEngine.generate_line_ttml(lyrics, title=title, artist=artist)
     else:
         ttml_xml = TTMLEngine.generate_ttml(lyrics, title=title, artist=artist, album=album)
@@ -1982,7 +2052,7 @@ def _split_to_syllables(segments: list) -> list:
 
 # ─── Vocal separation ──────────────────────────────────────────────────────────
 
-def _run_vocal_separation(job_id: str, audio_path: str, uvr_model_id: str) -> str:
+def _run_vocal_separation(job_id: str, audio_path: str, uvr_model_id: str, *, scratch_dir=None) -> str:
     """
     Run audio-separator with the chosen UVR5 model.
     Returns the path to the isolated vocals file.
@@ -1990,6 +2060,20 @@ def _run_vocal_separation(job_id: str, audio_path: str, uvr_model_id: str) -> st
     """
     model_info = UVR_MODELS[uvr_model_id]
     model_file = model_info["filename"]
+    if model_file.endswith(".onnx") and (
+        os.environ.get("PANDA_VOCAL_DIRECTML") == "1" or os.environ.get("PANDA_MAC_VOCALS") == "1"
+    ):
+        from vocal_directml import separate_vocals
+
+        try:
+            _set(job_id, status="separating", progress=25, message="Isolating vocals…")
+            return separate_vocals(
+                str(Path(audio_path).resolve()), model_file, Path("uploads").resolve(), scratch_dir=scratch_dir,
+            )
+        except Exception:
+            logger.exception("Vocal separation failed. Continuing with the original mix.")
+            _set(job_id, message="Vocal separation failed. Continuing with the original mix.")
+            return audio_path
     stem_key   = model_info["vocals_stem"]   # e.g. "Vocals" or "vocals"
     abs_audio_path = str(Path(audio_path).resolve())
 

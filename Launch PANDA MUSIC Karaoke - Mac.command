@@ -52,6 +52,9 @@ fi
 
 export PANDA_LIGHTWEIGHT=1
 if [ "$ram_mib" -lt 6144 ]; then export PANDA_LOW_MEMORY=1; fi
+if [ "$platform" = Darwin-arm64 ] && [ "$ram_mib" -ge 12288 ]; then
+    export PANDA_CPU_WHISPER_MODEL=small
+fi
 if [ "$ram_mib" -lt 12288 ]; then
     export PANDA_COMPACT_TEXT=1
     model=Qwen3-1.7B-Q8_0.gguf
@@ -109,6 +112,25 @@ if [ ! -x "$python" ] || [ "$(cat "$setup_stamp" 2>/dev/null || :)" != "$require
     printf '%s\n' "$requirements_hash" > "$setup_stamp"
 fi
 
+if [ "$platform" = Darwin-arm64 ] && [ "$ram_mib" -ge 12288 ]; then
+    vocal_requirements_hash="$requirements_hash:$(sha256 requirements-mac-vocals.txt)"
+    vocal_setup_stamp="$runtime/vocal-setup-complete"
+    if [ "$(cat "$vocal_setup_stamp" 2>/dev/null || :)" != "$vocal_requirements_hash" ]; then
+        printf 'Installing optional vocal separation for precise sync\n'
+        if "$uv" pip install --python "$python" -r requirements-core.txt -r requirements-mac-vocals.txt; then
+            printf '%s\n' "$vocal_requirements_hash" > "$vocal_setup_stamp"
+        fi
+    fi
+    if [ "$(cat "$vocal_setup_stamp" 2>/dev/null || :)" = "$vocal_requirements_hash" ] &&
+       ffmpeg_path=$("$python" -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'); then
+        mkdir -p "$runtime/bin"
+        ln -sf "$ffmpeg_path" "$runtime/bin/ffmpeg"
+        export PATH="$runtime/bin:$PATH"
+        export AUDIO_SEPARATOR_MODEL_DIR="$root/.model-cache/audio-separator"
+        export PANDA_MAC_VOCALS=1
+    fi
+fi
+
 if [ ! -x "$llama/llama-server" ] || [ ! -f "$editor/$model" ]; then
     printf '[3/3] Downloading the local text model and its runtime\n'
     if [ ! -x "$llama/llama-server" ]; then
@@ -117,6 +139,11 @@ if [ ! -x "$llama/llama-server" ] || [ ! -f "$editor/$model" ]; then
         tar -xzf "$downloads/$llama_archive" --strip-components 1 -C "$llama"
     fi
     download "https://huggingface.co/Qwen/$model_repo/resolve/main/$model?download=true" "$editor/$model" "$model_sha"
+fi
+
+if [ -f "$root/resources/review-start.mp3" ]; then
+    cp "$root/resources/review-start.mp3" "$root/static/review-start.mp3" ||
+        printf 'Optional review sound could not be installed.\n' >&2
 fi
 
 port=${PANDA_STUDIO_PORT:-8001}

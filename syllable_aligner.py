@@ -548,8 +548,11 @@ class SyllableAligner:
         from faster_whisper import WhisperModel
 
         global _CPU_WHISPER_MODEL, _CPU_WHISPER_MODEL_NAME
-        if whisper_model == "base" and os.environ.get("PANDA_LOW_MEMORY") == "1":
-            whisper_model = "tiny"
+        if whisper_model == "base":
+            if os.environ.get("PANDA_LOW_MEMORY") == "1":
+                whisper_model = "tiny"
+            elif os.environ.get("PANDA_CPU_WHISPER_MODEL") == "small":
+                whisper_model = "small"
         if _CPU_WHISPER_MODEL is None or _CPU_WHISPER_MODEL_NAME != whisper_model:
             _CPU_WHISPER_MODEL = None
             threads = max(1, min(6, (os.cpu_count() or 2) - 1))
@@ -869,7 +872,7 @@ class SyllableAligner:
 
         if not cleaned_raw_lines:
             return {
-                "meta": {"timingType": "Word", "source": "whisperx_global_align"},
+                "meta": {"timingType": "Word", "source": "whisperx_global_align", "matchedLineCount": 0},
                 "lines": [],
             }
 
@@ -948,10 +951,12 @@ class SyllableAligner:
         line_a_bounds: List[Optional[Tuple[int, int]]] = [None] * num_lines
         line_matched_pairs: List[List[Tuple[int, int]]] = [[] for _ in range(num_lines)]
 
+        exact_word_matches = 0
         if flat_user_tokens and ac_tokens:
             # Pass 3A: Global exact anchor blocks (with autojunk=False so chorus words are never skipped)
             matcher = difflib.SequenceMatcher(None, flat_user_tokens, ac_tokens, autojunk=False)
             blocks = [b for b in matcher.get_matching_blocks() if b[2] > 0]
+            exact_word_matches = sum(block.size for block in blocks)
 
             for u_start, a_start, size in blocks:
                 for offset in range(size):
@@ -1254,6 +1259,8 @@ class SyllableAligner:
                 "source": "whisperx_global_align",
                 "schemaVersion": 2,
                 "timingType": "Word",
+                "matchedLineCount": len(anchored_indices),
+                "exactWordMatches": exact_word_matches,
             },
             "lines": canonical_lines,
         }

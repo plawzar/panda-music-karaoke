@@ -2,6 +2,17 @@
 // PANDA MUSIC single-track workspace, 2026-11-27.
 
 const byId = (id) => document.getElementById(id);
+
+function studioIcon(name) {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const icon = document.createElementNS(namespace, 'svg');
+  const use = document.createElementNS(namespace, 'use');
+  icon.classList.add('studio-icon');
+  icon.setAttribute('aria-hidden', 'true');
+  use.setAttribute('href', '#icon-' + name);
+  icon.append(use);
+  return icon;
+}
 const form = byId('track-form');
 const audioFile = byId('track-file');
 const lyricsText = byId('lyrics-text');
@@ -19,7 +30,6 @@ const projectTab = byId('project-tab');
 const player = byId('player');
 const seek = byId('seek');
 const lineList = byId('line-list');
-const cancelSync = byId('cancel-sync');
 const boundaryStepMs = 50;
 const saveTimes = byId('save-times');
 const resume = byId('resume');
@@ -35,6 +45,7 @@ const lyricsPanel = byId('lyrics-panel');
 const editLyrics = byId('edit-lyrics');
 const recheckTiming = byId('recheck-timing');
 const clearTimings = byId('clear-timings');
+const repairTimings = byId('repair-timings');
 const lyricsEditor = byId('lyrics-editor');
 const themeToggle = byId('theme-toggle');
 const metadataFields = {
@@ -51,8 +62,63 @@ let activeLine = 0;
 let recheckAnchor;
 let tapping = false;
 let tappedStart = null;
-let syncController;
 let peaks = [];
+
+const activeOperations = new WeakMap();
+
+function beginOperation(button, message) {
+  const controller = new AbortController();
+  const container = document.createElement('span');
+  container.className = 'operation';
+  const status = document.createElement('span');
+  status.className = 'operation-progress';
+  status.setAttribute('role', 'status');
+  status.textContent = message;
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.className = 'stop-processing button-with-icon';
+  stop.append(studioIcon('square'), 'Остановить');
+  stop.addEventListener('click', () => {
+    stop.disabled = true;
+    status.textContent = 'Останавливаю…';
+    controller.abort();
+  });
+  container.append(status, stop);
+  const hadFocus = document.activeElement === button;
+  button.hidden = true;
+  button.after(container);
+  if (hadFocus) stop.focus({ preventScroll: true });
+  activeOperations.set(controller, { button, container, status, stop });
+  return controller;
+}
+
+function setOperationLabel(controller, message) {
+  activeOperations.get(controller).status.textContent = message;
+}
+
+function endOperation(controller) {
+  const { button, container, stop } = activeOperations.get(controller);
+  const restoreFocus = document.activeElement === stop || (controller.signal.aborted && document.activeElement === document.body);
+  button.hidden = false;
+  if (restoreFocus && button.getClientRects().length && !button.disabled) button.focus({ preventScroll: true });
+  container.remove();
+  activeOperations.delete(controller);
+}
+
+// Text inputs and editors already have native Select All behavior.
+// Formatted text regions opt in because their markup is outside a native field.
+studio.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+  if (event.key.toLowerCase() !== 'a' && event.code !== 'KeyA') return;
+  const target = event.target;
+  if (target.isContentEditable || target.matches?.('input, textarea, select')) return;
+  const region = target.closest?.('[data-selectable-text]');
+  if (!region) return;
+  const selection = window.getSelection();
+  if (!selection) return;
+  event.preventDefault();
+  selection.selectAllChildren(region);
+});
 
 const help = {
   shift: ['Автосдвиг строк', [
@@ -86,7 +152,7 @@ for (const button of document.querySelectorAll('[data-help]')) {
 
 function applyTheme(dark) {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  themeToggle.textContent = dark ? '☀' : '☾';
+  themeToggle.querySelector('use').setAttribute('href', dark ? '#icon-sun' : '#icon-moon');
   themeToggle.setAttribute('aria-pressed', String(dark));
   const label = dark ? 'Светлая тема' : 'Тёмная тема';
   themeToggle.setAttribute('aria-label', label);
@@ -188,8 +254,7 @@ for (const [key, field] of Object.entries(metadataFields)) {
 }
 
 function validateTimeline() {
-  const counts = { missing: 0, invalid: 0, syllables: 0, overlaps: new Set() };
-  const timed = [];
+  const counts = { missing: 0, invalid: 0, syllables: new Set(), overlaps: new Set(), timed: [] };
   const duration = audioDuration();
   lines().forEach((_, index) => {
     const [line, ...parts] = currentRows(index);
@@ -204,12 +269,12 @@ function validateTimeline() {
       return;
     }
     if (parts.some((part) => !validRange(part.start, part.end) || Number(part.start) < start || Number(part.end) > end)) {
-      counts.syllables++;
+      counts.syllables.add(index);
     }
-    timed.push({ index, start, end });
+    counts.timed.push({ index, start, end });
   });
   let longest;
-  for (const line of timed.sort((a, b) => a.start - b.start)) {
+  for (const line of [...counts.timed].sort((a, b) => a.start - b.start)) {
     if (longest && Math.round(line.start * 1000) < Math.round(longest.end * 1000)) {
       counts.overlaps.add(longest.index);
       counts.overlaps.add(line.index);
@@ -219,19 +284,78 @@ function validateTimeline() {
   return counts;
 }
 
+function fitSyllables(rows, start, end, repairedEnd) {
+  const scale = (repairedEnd - start) / (end - start);
+  const toTime = (ms) => (ms / 1000).toFixed(3);
+  const next = [{ start: rows[0].start, end: toTime(repairedEnd) }];
+  for (const part of rows.slice(1)) {
+    const from = Math.round(Number(part.start) * 1000);
+    const until = Math.round(Number(part.end) * 1000);
+    if (!validRange(part.start, part.end) || until <= start || from >= end) return null;
+    const left = Math.min(repairedEnd - 1, start + Math.round((Math.max(from, start) - start) * scale));
+    const right = Math.max(left + 1, start + Math.round((Math.min(until, end) - start) * scale));
+    next.push({ start: toTime(left), end: toTime(right) });
+  }
+  return next;
+}
+
+function planTimingRepair(validation) {
+  const fixes = new Map();
+  const nextForVoice = new Map();
+  for (const line of [...validation.timed].reverse()) {
+    const { index } = line;
+    const voice = lines()[index].agent || 'v1';
+    const start = Math.round(line.start * 1000);
+    const end = Math.round(line.end * 1000);
+    const nextStart = nextForVoice.get(voice);
+    nextForVoice.set(voice, start);
+    const rows = currentRows(index);
+    // A later line with a known start sets the end limit for the same vocal part.
+    // Coincident starts need a listening check to decide which line should move.
+    const minimumDuration = Math.max(boundaryStepMs, rows.length - 1);
+    const repairedEnd = nextStart - start >= minimumDuration && nextStart < end ? nextStart : end;
+    if (repairedEnd === end && !validation.syllables.has(index)) continue;
+    const repaired = fitSyllables(rows, start, end, repairedEnd);
+    if (repaired) fixes.set(index, repaired);
+  }
+  return fixes;
+}
+
+repairTimings.addEventListener('click', () => {
+  if (busy || !project) return;
+  const fixes = planTimingRepair(validateTimeline());
+  if (!fixes.size) return;
+  rememberDraft();
+  for (const [index, rows] of fixes) setTimingDraft(index, rows);
+  updateTimingDraft();
+  const remaining = validateTimeline();
+  const needsListening = remaining.missing || remaining.invalid || remaining.syllables.size || remaining.overlaps.size;
+  showStatus('result-status', 'Исправлено строк: ' + fixes.size + '. Проверь на слух и сохрани правки.'
+    + (needsListening ? ' Оставшиеся предупреждения можно проверить вручную.' : ''));
+});
+
 function showValidation(counts) {
   const box = byId('validation');
   const notices = [
     counts.missing ? 'Без обеих отметок: ' + counts.missing : '',
     counts.invalid ? 'Ошибки тайминга: ' + counts.invalid : '',
-    counts.syllables ? 'Проблемы со слогами: ' + counts.syllables : '',
   ].filter(Boolean);
-  box.textContent = notices.join(' · ') || (counts.overlaps.size ? '' : 'Тайминги проверены');
+  const hasWarnings = notices.length || counts.syllables.size || counts.overlaps.size;
+  box.textContent = hasWarnings ? notices.join(' · ') : 'Тайминги проверены';
   if (counts.overlaps.size) {
+    const requirement = document.createElement('strong');
+    requirement.className = 'timing-requirement';
+    requirement.textContent = 'Обязательно исправь пересечения. Скачивание TTML и LRC заблокировано.';
+    box.prepend(requirement);
+  }
+  for (const [label, indices] of [['Проблемы со слогами в строках', counts.syllables], ['Пересекаются строки', counts.overlaps]]) {
+    if (!indices.size) continue;
     const links = document.createElement('span');
     links.className = 'overlap-links';
-    links.append('Пересекаются строки ');
-    for (const index of [...counts.overlaps].sort((a, b) => a - b)) {
+    if (indices === counts.overlaps) links.classList.add('blocking-overlap-links');
+    links.append(label + ' ');
+    for (const [position, index] of [...indices].sort((a, b) => a - b).entries()) {
+      if (position) links.append(', ');
       const jump = document.createElement('button');
       jump.type = 'button';
       jump.textContent = String(index + 1);
@@ -245,7 +369,7 @@ function showValidation(counts) {
     }
     box.append(links);
   }
-  box.dataset.state = counts.invalid ? 'error' : notices.length || counts.overlaps.size ? 'warning' : 'ok';
+  box.dataset.state = counts.overlaps.size ? 'blocked' : counts.invalid ? 'error' : hasWarnings ? 'warning' : 'ok';
 }
 
 function showStatus(id, message, isError = false) {
@@ -275,14 +399,22 @@ function updateRecheckControl() {
 function updateControls() {
   const changes = hasChanges();
   const validation = project && validateTimeline();
+  const hasOverlaps = Boolean(validation && validation.overlaps.size);
   const audioName = audioFile.files[0]?.name;
-  byId('track-file-name').textContent = audioName || 'Выбрать файл';
+  const audioFilename = byId('track-file-name');
+  audioFilename.textContent = audioName || 'Выбрать';
+  audioFilename.title = audioName || '';
   audioFile.closest('.file-picker').classList.toggle('picked', Boolean(audioName));
   for (const input of [audioFile, lyricsText, lyricsFile, language]) input.disabled = busy;
   sync.disabled = busy || !audioFile.files.length || !(lyricsFile.files.length || lyricsText.value.trim());
   manual.disabled = sync.disabled;
   for (const button of downloadButtons) {
-    button.disabled = busy || changes || !validation || validation.missing > 0 || validation.invalid > 0;
+    button.disabled = busy || changes || !validation || validation.missing > 0 || validation.invalid > 0 || hasOverlaps;
+    if (hasOverlaps) button.setAttribute('aria-describedby', 'validation');
+    else button.removeAttribute('aria-describedby');
+  }
+  for (const [index, row] of [...lineList.children].entries()) {
+    row.classList.toggle('timing-overlap', Boolean(validation && validation.overlaps.has(index)));
   }
   for (const button of lineList.querySelectorAll('button')) button.disabled = busy || button.dataset.unset === 'true';
   for (const input of [...Object.values(metadataFields), autoShift, autoFollow]) input.disabled = busy;
@@ -298,6 +430,9 @@ function updateControls() {
   saveTimes.disabled = busy || !changes;
   resume.disabled = busy;
   if (validation) showValidation(validation);
+  const canRepair = validation && (validation.syllables.size || validation.overlaps.size) && planTimingRepair(validation).size > 0;
+  repairTimings.hidden = !canRepair;
+  repairTimings.disabled = busy || !canRepair;
 }
 
 async function post(path, body, signal) {
@@ -383,14 +518,6 @@ language.addEventListener('change', () => localStorage.setItem('panda-track-lang
 const previousLanguage = localStorage.getItem('panda-track-language');
 if ([...language.options].some((option) => option.value === previousLanguage)) language.value = previousLanguage;
 
-function showSyncProgress(message) {
-  sync.textContent = message || 'Синхронизировать';
-  sync.toggleAttribute('data-progress', Boolean(message));
-  sync.setAttribute('aria-busy', String(Boolean(message)));
-  byId('sync-status').classList.toggle('sync-announcement', Boolean(message));
-  if (message) showStatus('sync-status', message);
-}
-
 function finishImport(imported) {
   audioFile.value = lyricsFile.value = lyricsText.value = '';
   lyricsFile.dispatchEvent(new Event('change'));
@@ -404,8 +531,6 @@ function placeUntimedLines(track) {
   track.unplacedLines = [];
 }
 
-cancelSync.addEventListener('click', () => syncController?.abort());
-
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const hasTextDraft = !lyricsPanel.hidden && lyricsEditor.value !== lines().map(formatLineText).join('\n');
@@ -418,23 +543,18 @@ form.addEventListener('submit', async (event) => {
   const audio = new FormData();
   audio.append('files', selectedAudio);
   let pending;
-  const controller = manualOnly ? null : new AbortController();
-  const signal = controller?.signal;
-  syncController = controller;
-  cancelSync.hidden = !controller;
+  const controller = beginOperation(manualOnly ? manual : sync, 'Загружаю файлы…');
+  const { signal } = controller;
   busy = true;
   updateControls();
   try {
-    if (manualOnly) showStatus('sync-status', 'Загружаю аудио и текст…');
-    else {
-      showSyncProgress('Загружаю файлы…');
-      sync.scrollIntoView({ block: 'nearest' });
-    }
+    showStatus('sync-status', '');
     const uploaded = await (await post('/api/project/upload_audio', audio, signal)).json();
     const lyrics = new FormData();
     const stem = selectedAudio.name.replace(/\.[^.]+$/, '');
     lyrics.append('files', fromFile, stem + extension);
     const assigned = await (await post('/api/project/' + uploaded.project_id + '/upload_lyrics', lyrics, signal)).json();
+    signal.throwIfAborted();
     if (!assigned.matched_count) {
       throw new Error(assigned.import_errors?.length
         ? 'Не удалось прочитать документ Word. Проверь, что в файле DOCX есть текст.'
@@ -445,25 +565,36 @@ form.addEventListener('submit', async (event) => {
     pending.language = language.value;
     if (manualOnly) placeUntimedLines(pending.tracks[0]);
     await post('/api/project/save_project', pending, signal);
+    signal.throwIfAborted();
     if (manualOnly) {
       finishImport(pending);
       setTapMode(true);
       showStatus('sync-status', '');
       return;
     }
-    showSyncProgress('Синхронизирую…');
+    setOperationLabel(controller, 'Синхронизирую…');
     const aligned = await (await post('/api/project/' + pending.id + '/align_track', {
       track_id: pending.tracks[0].id,
       language: pending.language,
       whisper_model: 'base',
       mode: 'studio_ai',
+      quality: true,
       cancellable: true,
     }, signal)).json();
     signal.throwIfAborted();
     if (!aligned.track?.lyrics?.lines?.length) throw new Error('Не удалось найти строки в аудио.');
     pending.tracks[0] = aligned.track;
     finishImport(pending);
-    showStatus('sync-status', 'Тайминги готовы.');
+    const matched = aligned.track.lyrics.meta?.matchedLineCount;
+    if (matched === 0) {
+      showStatus('result-status', 'Не удалось сопоставить строки с вокалом. Проверь и расставь тайминги вручную.', true);
+    } else if (matched < aligned.track.lyrics.lines.length) {
+      showStatus('result-status', 'Найдено совпадений по аудио: ' + matched + ' из ' + aligned.track.lyrics.lines.length + '. Остальные тайминги приблизительные.');
+    } else if (aligned.track.alignmentAudio === 'mix') {
+      showStatus('result-status', 'Тайминги рассчитаны по исходному миксу. Проверь строки на слух.');
+    } else {
+      showStatus('sync-status', 'Тайминги готовы.');
+    }
     result.scrollIntoView({ block: 'nearest' });
   } catch (error) {
     if (!project && pending && !signal?.aborted) {
@@ -473,14 +604,13 @@ form.addEventListener('submit', async (event) => {
       showStatus('result-status', 'Автосинхронизация не удалась. Запусти трек и отмечай начало и конец строк пробелом.', true);
     } else {
       selectSidebarTab(uploadTab);
-      showStatus('sync-status', signal?.aborted ? 'Синхронизация отменена.' : error.message, !signal?.aborted);
+      const stopped = manualOnly ? 'Загрузка остановлена.' : 'Синхронизация остановлена.';
+      showStatus('sync-status', signal.aborted ? stopped : error.message, !signal.aborted);
     }
   } finally {
-    cancelSync.hidden = true;
-    syncController = null;
-    showSyncProgress('');
     busy = false;
     updateControls();
+    endOperation(controller);
   }
 });
 
@@ -497,6 +627,7 @@ function showProject(saved) {
   setTapMode(false);
   setLyricsPanel(false);
   player.src = saved.tracks[0].audioUrl;
+  byId('download-vocals').hidden = !saved.tracks[0].vocalsUrl?.startsWith('/api/audio/');
   loadWaveform(player.src);
   showMetadata();
   renderLineList();
@@ -517,6 +648,7 @@ function selectSidebarTab(tab) {
   }
   importPanel.hidden = tab !== uploadTab;
   inspector.hidden = tab !== projectTab;
+  byId('project-downloads').hidden = inspector.hidden;
   importPanel.parentElement.scrollTop = 0;
 }
 
@@ -796,7 +928,7 @@ function renderLineList() {
     play.className = 'row-play';
     play.setAttribute('aria-label', 'Играть со строки ' + (index + 1));
     play.title = play.getAttribute('aria-label');
-    play.append(document.createElement('span'));
+    play.append(studioIcon('skip-forward'));
     play.addEventListener('click', () => {
       selectLine(index);
       playLine(index);
@@ -827,16 +959,16 @@ function renderLineList() {
       target.dataset.boundary = key;
       target.setAttribute('aria-label', name + ' строки ' + (index + 1) + ' по курсору');
       target.title = target.getAttribute('aria-label');
-      target.append(document.createElement('span'));
+      target.append(studioIcon('circle-dot'));
       target.addEventListener('click', () => stampBoundary(index, key));
       const steps = document.createElement('span');
       steps.className = 'boundary-steps';
-      for (const [direction, sign, when] of [[-1, '−', 'раньше'], [1, '+', 'позже']]) {
+      for (const [direction, icon, when] of [[-1, 'minus', 'раньше'], [1, 'plus', 'позже']]) {
         const step = document.createElement('button');
         const stepLabel = name + ' строки ' + (index + 1) + ' на 50 мс ' + when;
         step.type = 'button';
         step.className = 'nudge';
-        step.textContent = sign;
+        step.append(studioIcon(icon));
         step.setAttribute('aria-label', stepLabel);
         step.title = stepLabel;
         step.dataset.step = direction;
@@ -858,7 +990,7 @@ function renderLineList() {
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.className = 'row-clear';
-    clear.textContent = '×';
+    clear.append(studioIcon('x'));
     clear.setAttribute('aria-label', 'Очистить тайминги строки ' + (index + 1));
     clear.title = 'Очистить тайминги. С Shift — очистить диапазон от выбранной строки.';
     clear.addEventListener('click', (event) => {
@@ -969,14 +1101,16 @@ recheckTiming.addEventListener('click', async () => {
   if (recheckTiming.disabled) return;
   const { fromStart, anchor, offset } = getRecheckAnchor();
   const text = lines().slice(offset).map(formatLineText);
+  const controller = beginOperation(recheckTiming, 'Перепроверяю…');
+  const { signal } = controller;
   busy = true;
-  recheckTiming.setAttribute('aria-busy', 'true');
   updateControls();
   showStatus('result-status', `Перепроверяю строки с ${offset + 1}-й до конца трека…`);
   try {
     const { suggestions } = await (await post('/api/project/' + project.id + '/recheck_timeline', {
       track_id: project.tracks[0].id, anchor, from_start: fromStart, language: metadata.language, lines: text,
-    })).json();
+    }, signal)).json();
+    signal.throwIfAborted();
     if (!suggestions.length) {
       showStatus('result-status', 'Уверенных совпадений нет. Попробуй отметить начало следующей строки.', true);
       return;
@@ -994,11 +1128,11 @@ recheckTiming.addEventListener('click', async () => {
     const message = `Перепроверено строк: ${suggestions.length}.` + (missed ? ` Без уверенного совпадения: ${missed}.` : '');
     showStatus('result-status', message + (hasChanges() ? ' Сохрани правки.' : ''));
   } catch (error) {
-    showStatus('result-status', error.message, true);
+    showStatus('result-status', signal.aborted ? 'Перепроверка остановлена.' : error.message, !signal.aborted);
   } finally {
     busy = false;
-    recheckTiming.removeAttribute('aria-busy');
     updateControls();
+    endOperation(controller);
   }
 });
 
@@ -1146,7 +1280,8 @@ for (const [id, amount] of [['back-five', -5], ['forward-five', 5]]) {
   });
 }
 byId('speed').addEventListener('change', (event) => { player.playbackRate = Number(event.target.value); });
-byId('play').addEventListener('click', () => {
+const playButton = byId('play');
+playButton.addEventListener('click', () => {
   if (player.paused) player.play().catch(() => {});
   else player.pause();
 });
@@ -1154,8 +1289,13 @@ player.addEventListener('loadedmetadata', updatePlayhead);
 player.addEventListener('loadedmetadata', updateControls);
 player.addEventListener('timeupdate', updatePlayhead);
 player.addEventListener('seeked', updatePlayhead);
-player.addEventListener('play', () => { byId('play').textContent = 'Ⅱ Пауза'; });
-player.addEventListener('pause', () => { byId('play').textContent = '▶ Слушать'; });
+function updatePlayButton() {
+  const paused = player.paused;
+  playButton.querySelector('use').setAttribute('href', paused ? '#icon-play' : '#icon-pause');
+  playButton.querySelector('span').textContent = paused ? 'Слушать' : 'Пауза';
+}
+player.addEventListener('play', updatePlayButton);
+player.addEventListener('pause', updatePlayButton);
 new ResizeObserver(drawWaveform).observe(byId('wave'));
 
 function readTimingRows(line) {
@@ -1271,6 +1411,14 @@ async function exportTrack(format) {
 
 byId('export-ttml').addEventListener('click', () => exportTrack('ttml'));
 byId('export-lrc').addEventListener('click', () => exportTrack('lrc'));
+byId('download-vocals').addEventListener('click', () => {
+  const track = project.tracks[0];
+  if (!track.vocalsUrl?.startsWith('/api/audio/')) return;
+  const link = document.createElement('a');
+  link.href = track.vocalsUrl;
+  link.download = 'vocals.wav';
+  link.click();
+});
 applyTheme(localStorage.getItem('panda-editor-theme') === 'dark');
 updateControls();
 findLastTrack();

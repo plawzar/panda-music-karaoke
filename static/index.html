@@ -5,40 +5,143 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PANDA MUSIC · Синхронизация текста</title>
   <link rel="icon" href="/static/pandamus-logo.jpg" type="image/jpeg">
-  <link rel="stylesheet" href="/static/single-track.css?v=35">
-  <script src="/static/single-track.js?v=22" defer></script>
-  <script src="/static/lyrics-tools.js?v=4" defer></script>
+  <link rel="stylesheet" href="/static/single-track.css?v=48">
+  <script src="/static/single-track.js?v=31" defer></script>
+  <script src="/static/lyrics-tools.js?v=31" defer></script>
 </head>
 <body>
+  <svg class="studio-symbols" aria-hidden="true" width="0" height="0">
+    <!-- Lucide 0.468.0. See NOTICE.md for the license. -->
+    <symbol id="icon-undo-2" viewBox="0 0 24 24">
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />
+    </symbol>
+    <symbol id="icon-redo-2" viewBox="0 0 24 24">
+      <path d="m15 14 5-5-5-5" />
+      <path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />
+    </symbol>
+    <symbol id="icon-keyboard" viewBox="0 0 24 24">
+      <path d="M10 8h.01" />
+      <path d="M12 12h.01" />
+      <path d="M14 8h.01" />
+      <path d="M16 12h.01" />
+      <path d="M18 8h.01" />
+      <path d="M6 8h.01" />
+      <path d="M7 16h10" />
+      <path d="M8 12h.01" />
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+    </symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </symbol>
+    <symbol id="icon-volume-2" viewBox="0 0 24 24">
+      <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
+      <path d="M16 9a5 5 0 0 1 0 6" />
+      <path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
+    </symbol>
+    <symbol id="icon-volume-x" viewBox="0 0 24 24">
+      <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
+      <line x1="22" x2="16" y1="9" y2="15" />
+      <line x1="16" x2="22" y1="9" y2="15" />
+    </symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" x2="12" y1="3" y2="15" />
+    </symbol>
+    <symbol id="icon-paperclip" viewBox="0 0 24 24">
+      <path d="M13.234 20.252 21 12.3" />
+      <path d="m16 6-8.414 8.586a2 2 0 0 0 0 2.828 2 2 0 0 0 2.828 0l8.414-8.586a4 4 0 0 0 0-5.656 4 4 0 0 0-5.656 0l-8.415 8.585a6 6 0 1 0 8.486 8.486" />
+    </symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24">
+      <polygon points="6 3 20 12 6 21 6 3" />
+    </symbol>
+    <symbol id="icon-pause" viewBox="0 0 24 24">
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+    </symbol>
+    <symbol id="icon-skip-forward" viewBox="0 0 24 24">
+      <polygon points="5 4 15 12 5 20 5 4" />
+      <line x1="19" x2="19" y1="5" y2="19" />
+    </symbol>
+    <symbol id="icon-circle-dot" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10" />
+      <circle cx="12" cy="12" r="1" />
+    </symbol>
+    <symbol id="icon-minus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+    </symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </symbol>
+    <symbol id="icon-x" viewBox="0 0 24 24">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" x2="12" y1="15" y2="3" />
+    </symbol>
+    <symbol id="icon-square" viewBox="0 0 24 24">
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+    </symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24">
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6" />
+    </symbol>
+  </svg>
   <main>
     <section id="studio" class="panel studio-empty" data-tool="sync" aria-label="Караоке-студия PANDA MUSIC">
       <header class="result-bar">
         <div class="studio-tabs" role="tablist" aria-label="Инструменты студии">
           <button id="studio-sync-tab" type="button" role="tab" aria-selected="true" aria-controls="studio-sync" data-tool="sync">Синхронизация</button>
           <button id="studio-review-tab" type="button" role="tab" aria-selected="false" aria-controls="studio-review" tabindex="-1" data-tool="review">Проверка текста</button>
+          <button id="studio-distribution-tab" type="button" role="tab" aria-selected="false" aria-controls="studio-distribution" tabindex="-1" data-tool="distribution">К дистрибуции</button>
           <button id="studio-genius-tab" type="button" role="tab" aria-selected="false" aria-controls="studio-genius" tabindex="-1" data-tool="genius">Genius</button>
         </div>
         <div class="editor-tools" aria-label="Управление редактором">
-          <button id="undo" class="icon-button" type="button" title="Отменить (Ctrl+Z)" aria-label="Отменить">↶</button>
-          <button id="redo" class="icon-button" type="button" title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить">↷</button>
-          <button class="icon-button" type="button" data-help="keyboard" title="Горячие клавиши" aria-label="Горячие клавиши">⌨</button>
-          <button id="theme-toggle" class="icon-button" type="button" title="Тёмная тема" aria-label="Тёмная тема" aria-pressed="false">☾</button>
+          <button id="undo" class="icon-button" type="button" title="Отменить (Ctrl+Z)" aria-label="Отменить"><svg class="studio-icon" aria-hidden="true"><use href="#icon-undo-2"/></svg></button>
+          <button id="redo" class="icon-button" type="button" title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить"><svg class="studio-icon" aria-hidden="true"><use href="#icon-redo-2"/></svg></button>
+          <button class="icon-button" type="button" data-help="keyboard" title="Горячие клавиши" aria-label="Горячие клавиши"><svg class="studio-icon" aria-hidden="true"><use href="#icon-keyboard"/></svg></button>
+          <button id="review-sound-toggle" class="icon-button" type="button" title="Выключить звук проверки" aria-label="Звук проверки текста" aria-pressed="true" hidden><svg class="studio-icon" aria-hidden="true"><use href="#icon-volume-2"/></svg></button>
+          <button id="theme-toggle" class="icon-button" type="button" title="Тёмная тема" aria-label="Тёмная тема" aria-pressed="false"><svg class="studio-icon" aria-hidden="true"><use href="#icon-moon"/></svg></button>
           <button id="reset-edits" type="button" title="Вернуть последнюю сохранённую версию">Вернуть сохранённое</button>
         </div>
       </header>
       <div id="studio-sync" class="editor-layout" role="tabpanel" aria-labelledby="studio-sync-tab">
         <div id="empty-workspace" class="editor-empty">
           <div class="drop-guide">
-            <span class="drop-icon" aria-hidden="true">⇩</span>
-            <h1>Перетащи сюда аудио и текст</h1>
+            <span class="drop-icon" aria-hidden="true"><svg class="studio-icon" aria-hidden="true"><use href="#icon-upload"/></svg></span>
+            <h1>Перетащи аудио и текст</h1>
             <button id="resume" type="button" hidden>Открыть последний трек</button>
-            <p>Можно перетащить оба файла сразу. Текст — DOCX или TXT.</p>
+            <p>Можно загрузить оба файла сразу. Текст в DOCX или TXT.</p>
           </div>
         </div>
         <section id="result" class="editor-workspace" aria-labelledby="result-title" hidden>
           <h2 id="result-title">Тайминги</h2>
           <div class="transport">
-            <button id="play" class="primary" type="button">▶ Слушать</button>
+            <button id="play" class="primary button-with-icon" type="button"><svg class="studio-icon" aria-hidden="true"><use href="#icon-play"/></svg><span>Слушать</span></button>
             <button id="back-five" class="skip-button" type="button" aria-label="Назад на 5 секунд" title="Назад на 5 секунд">−5 с</button>
             <button id="forward-five" class="skip-button" type="button" aria-label="Вперёд на 5 секунд" title="Вперёд на 5 секунд">+5 с</button>
             <output id="play-time" class="play-time">00:00.000 / 00:00.000</output>
@@ -66,18 +169,15 @@
               <div class="auto-tools">
                 <div class="toggle-group">
                   <label class="switch-label"><input id="auto-shift" type="checkbox" role="switch">Автосдвиг</label>
-                  <button type="button" class="help-button" data-help="shift" aria-label="Что такое автосдвиг" aria-haspopup="dialog"><span aria-hidden="true">i</span></button>
+                  <button type="button" class="help-button" data-help="shift" aria-label="Что такое автосдвиг" aria-haspopup="dialog"><svg class="studio-icon" aria-hidden="true"><use href="#icon-info"/></svg></button>
                 </div>
                 <div class="toggle-group">
                   <label class="switch-label"><input id="auto-follow" type="checkbox" role="switch">Автосмена</label>
-                  <button type="button" class="help-button" data-help="follow" aria-label="Что такое автосмена" aria-haspopup="dialog"><span aria-hidden="true">i</span></button>
+                  <button type="button" class="help-button" data-help="follow" aria-label="Что такое автосмена" aria-haspopup="dialog"><svg class="studio-icon" aria-hidden="true"><use href="#icon-info"/></svg></button>
                 </div>
               </div>
               <div class="timing-actions">
-                <button id="recheck-timing" class="compact-button" type="button" disabled>
-                  <span>Перепроверить синхронизацию после этой строчки</span>
-                  <span>Проверяю вокал…</span>
-                </button>
+                <button id="recheck-timing" class="compact-button" type="button" disabled>Перепроверить дальше</button>
               </div>
             </div>
           </div>
@@ -103,25 +203,28 @@
         <aside class="editor-sidebar" aria-label="Загрузка, настройки и экспорт">
           <div class="sidebar-tabs" role="tablist" aria-label="Трек">
             <button id="upload-tab" type="button" role="tab" aria-selected="true" aria-controls="track-import">Загрузка</button>
-            <button id="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-inspector" tabindex="-1" disabled>Настройки и экспорт</button>
+            <button id="project-tab" type="button" role="tab" aria-label="Настройки и экспорт" aria-selected="false" aria-controls="project-inspector" tabindex="-1" disabled>Настройки</button>
           </div>
           <div class="sidebar-content">
             <div id="track-import" role="tabpanel" aria-labelledby="upload-tab">
               <form id="track-form">
                 <p id="file-drop-status" class="status drop-status" role="status" hidden></p>
                 <label class="file-picker">
-                  <input id="track-file" class="file-input" type="file" accept=".wav,.mp3,.flac,.m4a,.ogg,.opus,.aac" aria-describedby="track-file-name" required>
-                  <span class="file-label">Аудиофайл</span>
-                  <span id="track-file-name" class="file-name">Выбрать файл</span>
+                  <input id="track-file" class="file-input" type="file" accept=".wav,.mp3,.flac,.m4a,.ogg,.opus,.aac" aria-label="Выбрать аудиофайл" aria-describedby="track-file-name" required>
+                  <svg class="studio-icon" aria-hidden="true"><use href="#icon-upload"/></svg>
+                  <span class="file-label">Аудио</span>
+                  <span id="track-file-name" class="file-name">Выбрать</span>
                 </label>
                 <div class="text-source-field">
                   <label class="text-source-title" for="lyrics-text">Текст песни</label>
                   <textarea id="lyrics-text" rows="3" placeholder="Вставь текст, по одной строке на фрагмент" aria-describedby="sync-drop-hint"></textarea>
-                  <div class="text-source-controls text-drop-hint">
-                    <span id="sync-drop-hint" class="drop-hint-label"><span aria-hidden="true">⇩</span> Перетащи сюда DOCX или TXT</span>
-                    <label class="attach-text"><input id="lyrics-file" class="file-input" type="file" accept=".docx,.txt" aria-describedby="sync-drop-hint"><span>Выбрать файл</span></label>
-                    <span data-source-filename></span>
-                    <button type="button" data-source-clear hidden>Убрать файл</button>
+                  <div class="text-source-controls">
+                    <label class="attach-text"><input id="lyrics-file" class="file-input" type="file" accept=".docx,.txt" aria-label="Прикрепить текст песни" aria-describedby="sync-drop-hint"><svg class="studio-icon" aria-hidden="true"><use href="#icon-paperclip"/></svg><span>Прикрепить</span></label>
+                    <span id="sync-drop-hint" class="drop-hint-label">DOCX / TXT</span>
+                    <div class="attachment-details">
+                      <span data-source-filename></span>
+                      <button type="button" data-source-clear aria-label="Убрать прикреплённый файл" hidden>Убрать</button>
+                    </div>
                   </div>
                 </div>
                 <div class="actions">
@@ -142,7 +245,6 @@
                     </select>
                   </label>
                   <button id="sync" class="primary" type="submit" disabled>Синхронизировать</button>
-                  <button id="cancel-sync" type="button" hidden>Отменить синхронизацию</button>
                   <button id="manual" type="submit" disabled>Разметить вручную</button>
                 </div>
                 <p id="sync-status" class="status" role="status" hidden></p>
@@ -150,32 +252,35 @@
             </div>
             <div id="project-inspector" class="project-settings" role="tabpanel" aria-labelledby="project-tab" hidden>
               <section>
+                <h3>Проверка таймингов</h3>
+                <p id="validation" class="validation" role="status"></p>
+                <p id="result-status" class="status" role="status" hidden></p>
+                <button id="repair-timings" class="compact-button" type="button" hidden>Поправить тайминги</button>
+                <button id="clear-timings" class="compact-button clear-timings" type="button" title="Удалить все отметки времени и начать ручную разметку">Очистить все тайминги</button>
+              </section>
+              <section>
                 <h3>Трек</h3>
                 <label class="field"><span>Название</span><input id="track-title" type="text"></label>
                 <label class="field"><span>Исполнитель</span><input id="track-artist" type="text"></label>
                 <label class="field"><span id="track-language-label">Язык текста</span><select id="track-language" aria-labelledby="track-language-label"></select></label>
               </section>
-              <section>
-                <h3>Проверка таймингов</h3>
-                <p id="validation" class="validation" role="status"></p>
-                <p id="result-status" class="status" role="status" hidden></p>
-                <button id="clear-timings" class="compact-button clear-timings" type="button" title="Удалить все отметки времени и начать ручную разметку">Очистить все тайминги</button>
-              </section>
-              <div class="editor-downloads">
-                <button id="save-times" class="primary" type="button" disabled>Сохранить правки</button>
-                <button id="export-ttml" type="button">Скачать TTML</button>
-                <button id="export-lrc" type="button">Скачать LRC</button>
-              </div>
             </div>
+          </div>
+          <div id="project-downloads" class="editor-downloads" hidden>
+            <button id="save-times" class="primary" type="button" disabled>Сохранить правки</button>
+            <button id="export-ttml" type="button" class="button-with-icon"><svg class="studio-icon" aria-hidden="true"><use href="#icon-download"/></svg>Скачать TTML</button>
+            <button id="export-lrc" type="button" class="button-with-icon"><svg class="studio-icon" aria-hidden="true"><use href="#icon-download"/></svg>Скачать LRC</button>
+            <button id="download-vocals" type="button" class="button-with-icon" hidden><svg class="studio-icon" aria-hidden="true"><use href="#icon-download"/></svg>Скачать вокал WAV</button>
           </div>
           <footer class="studio-about">
             <div class="studio-brand">
-              <img class="brand-logo" src="/static/pandamus-logo.jpg" width="52" height="52" alt="">
+              <img class="brand-logo" src="/static/pandamus-logo.jpg" width="36" height="36" alt="">
               <div><strong>PANDA MUSIC</strong><span>Караоке-студия</span></div>
             </div>
-            <p>Локальная синхронизация текста с вокалом. Экспорт в TTML и LRC.</p>
-            <a href="https://panda-mus.com/" target="_blank" rel="noopener">panda-mus.com</a>
-            <a href="/usage-policy" target="_blank" rel="noopener">Условия и авторство</a>
+            <nav aria-label="О студии">
+              <a href="https://panda-mus.com/" target="_blank" rel="noopener">panda-mus.com</a>
+              <a href="/usage-policy" target="_blank" rel="noopener">Условия и авторство</a>
+            </nav>
           </footer>
         </aside>
       </div>
@@ -185,20 +290,52 @@
           <div class="text-source-field">
             <label class="text-source-title" for="review-text">Текст песни</label>
             <textarea id="review-text" name="text" rows="7" placeholder="Вставь текст песни" aria-describedby="review-drop-hint"></textarea>
-            <div class="text-source-controls text-drop-hint">
-              <span id="review-drop-hint" class="drop-hint-label"><span aria-hidden="true">⇩</span> Перетащи сюда DOCX или TXT</span>
-              <label class="attach-text"><input id="review-files" class="file-input" type="file" accept=".docx,.txt" multiple aria-describedby="review-drop-hint"><span>Выбрать файлы</span></label>
-              <span data-source-filename></span>
+            <div class="text-source-controls">
+              <label class="attach-text"><input id="review-file" class="file-input" type="file" accept=".docx,.txt" aria-label="Прикрепить файл для проверки" aria-describedby="review-drop-hint"><svg class="studio-icon" aria-hidden="true"><use href="#icon-paperclip"/></svg><span>Прикрепить</span></label>
+              <span id="review-drop-hint" class="drop-hint-label">DOCX / TXT</span>
+              <div class="attachment-details"><span data-source-filename></span></div>
             </div>
           </div>
-          <label id="review-name" class="field" hidden><span>Имя исходного файла без расширения</span><input name="name" type="text"></label>
-          <div class="text-tool-buttons"><button class="primary" type="submit" disabled>Проверить текст</button><button type="button" data-use-track>Взять текст текущего трека</button></div>
-          <p class="text-source"><a href="https://artists.apple.com/support/1111-lyrics-guidelines" target="_blank" rel="noopener">Правила Apple Music</a> · Правила PANDA MUSIC</p>
+          <label id="review-name" class="field" hidden><span>Название трека</span><input name="name" type="text" placeholder="Необязательно"></label>
+          <div class="text-tool-buttons"><button class="primary" type="submit" disabled>Проверить текст</button><button type="button" data-use-track aria-label="Взять текст текущего трека">Из трека</button></div>
+          <p class="text-source text-links"><a href="https://artists.apple.com/support/1111-lyrics-guidelines" target="_blank" rel="noopener">Правила Apple Music</a> <a href="/static/panda-music-memo.docx" download="Памятка_по_пропаганде_наркотиков_1.docx">Правила PANDA MUSIC</a></p>
         </form>
         <div class="text-tool-output">
           <h2>Результаты проверки</h2>
           <p id="review-status" class="status" role="status" hidden></p>
           <div id="review-results" class="review-results"></div>
+        </div>
+      </section>
+      <section id="studio-distribution" class="text-tool" role="tabpanel" aria-labelledby="studio-distribution-tab" hidden>
+        <form id="distribution-form" class="text-tool-form">
+          <h1>Подготовка текста к дистрибуции</h1>
+          <div class="text-source-field">
+            <label class="text-source-title" for="distribution-text">Текст песни</label>
+            <textarea id="distribution-text" name="text" rows="9" placeholder="Вставь текст песни" aria-describedby="distribution-drop-hint"></textarea>
+            <div class="text-source-controls">
+              <label class="attach-text"><input class="file-input" name="file" type="file" accept=".docx,.txt" aria-label="Прикрепить файл для дистрибуции" aria-describedby="distribution-drop-hint"><svg class="studio-icon" aria-hidden="true"><use href="#icon-paperclip"/></svg><span>Прикрепить</span></label>
+              <span id="distribution-drop-hint" class="drop-hint-label">DOCX / TXT</span>
+              <div class="attachment-details">
+                <span data-source-filename></span>
+                <button type="button" data-source-clear aria-label="Убрать прикреплённый файл" hidden>Убрать</button>
+              </div>
+            </div>
+          </div>
+          <div class="text-tool-buttons">
+            <button class="primary" type="submit" disabled>Оформить текст</button>
+            <button type="button" data-use-track aria-label="Взять текст текущего трека">Из трека</button>
+          </div>
+          <p class="text-source text-links"><a href="https://artists.apple.com/support/1111-lyrics-guidelines" target="_blank" rel="noopener">Правила Apple Music</a></p>
+          <p class="text-source">Перед отправкой сверь с записью повторы, бэк-вокал и места, где слова заглушены.</p>
+        </form>
+        <div class="text-tool-output">
+          <h2 id="distribution-result-label">Текст для Apple Music</h2>
+          <p id="distribution-status" class="status" role="status" hidden></p>
+          <textarea id="distribution-result" rows="13" aria-labelledby="distribution-result-label" readonly hidden></textarea>
+          <div id="distribution-actions" class="text-tool-buttons" hidden>
+            <button id="copy-distribution" class="button-with-icon" type="button"><svg class="studio-icon" aria-hidden="true"><use href="#icon-copy"/></svg>Скопировать текст</button>
+            <button id="download-distribution" class="button-with-icon" type="button"><svg class="studio-icon" aria-hidden="true"><use href="#icon-download"/></svg>Скачать DOCX</button>
+          </div>
         </div>
       </section>
       <section id="studio-genius" class="text-tool" role="tabpanel" aria-labelledby="studio-genius-tab" hidden>
@@ -207,27 +344,46 @@
           <div class="text-source-field">
             <label class="text-source-title" for="genius-text">Текст песни</label>
             <textarea id="genius-text" name="text" rows="9" placeholder="Вставь текст песни" aria-describedby="genius-drop-hint"></textarea>
-            <div class="text-source-controls text-drop-hint">
-              <span id="genius-drop-hint" class="drop-hint-label"><span aria-hidden="true">⇩</span> Перетащи сюда DOCX или TXT</span>
-              <label class="attach-text"><input class="file-input" name="file" type="file" accept=".docx,.txt" aria-describedby="genius-drop-hint"><span>Выбрать файл</span></label>
-              <span data-source-filename></span>
-              <button type="button" data-source-clear hidden>Убрать файл</button>
+            <div class="text-source-controls">
+              <label class="attach-text"><input class="file-input" name="file" type="file" accept=".docx,.txt" aria-label="Прикрепить файл для Genius" aria-describedby="genius-drop-hint"><svg class="studio-icon" aria-hidden="true"><use href="#icon-paperclip"/></svg><span>Прикрепить</span></label>
+              <span id="genius-drop-hint" class="drop-hint-label">DOCX / TXT</span>
+              <div class="attachment-details">
+                <span data-source-filename></span>
+                <button type="button" data-source-clear aria-label="Убрать прикреплённый файл" hidden>Убрать</button>
+              </div>
             </div>
           </div>
-          <div class="text-tool-buttons"><button class="primary" type="submit">Оформить для Genius</button><button type="button" data-use-track>Взять текст текущего трека</button></div>
-          <p class="text-source"><a href="https://genius.com/albums/Genius/Guides" target="_blank" rel="noopener">Руководства Genius</a> <a href="https://genius.com/Yohji-da-vertu-vva-lyrics" target="_blank" rel="noopener">Пример «VVA»</a></p>
+          <div class="text-tool-buttons"><button class="primary" type="submit">Оформить для Genius</button><button type="button" data-use-track aria-label="Взять текст текущего трека">Из трека</button></div>
+          <details class="genius-guide">
+            <summary class="icon-summary"><svg class="studio-icon" aria-hidden="true"><use href="#icon-chevron-down"/></svg>Как подписать секции и голоса</summary>
+            <p class="text-source">Подписи можно вставить прямо в текст песни.</p>
+            <pre>[Куплет: Ада]
+Я слышу город
+
+[Припев]
+Ада: Я вижу свет
+Боря: В конце пути
+Ада &amp; Боря: Нам по пути</pre>
+            <p class="text-source">Если одиночная подпись не распозналась, добавь в начале <code>[Исполнители: Ада, Боря]</code>.</p>
+            <p class="text-source text-links"><a href="https://genius.com/albums/Genius/Guides" target="_blank" rel="noopener">Руководства Genius</a> <a href="https://genius.com/Yohji-da-vertu-vva-lyrics" target="_blank" rel="noopener">Пример на Genius</a></p>
+          </details>
         </form>
         <div class="text-tool-output">
-          <h2 id="genius-result-label">Готовый текст</h2>
+          <div class="text-output-heading">
+            <h2 id="genius-result-label">Черновик для Genius</h2>
+            <button type="button" id="copy-genius" class="button-with-icon" hidden><svg class="studio-icon" aria-hidden="true"><use href="#icon-copy"/></svg><span>Скопировать текст</span></button>
+          </div>
           <p id="genius-status" class="status" role="status" hidden></p>
-          <textarea id="genius-result" rows="13" aria-labelledby="genius-result-label" hidden></textarea>
-          <button type="button" id="copy-genius" hidden>Скопировать текст</button>
+          <textarea id="genius-result" rows="13" aria-labelledby="genius-result-label" aria-describedby="genius-quality" spellcheck="false" hidden></textarea>
+          <p id="genius-quality" class="status" role="status" hidden></p>
         </div>
       </section>
     </section>
     <dialog id="help-dialog" aria-labelledby="help-title">
-      <form method="dialog"><button class="icon-button" aria-label="Закрыть">×</button></form>
-      <h2 id="help-title"></h2>
+      <div class="help-header">
+        <h2 id="help-title"></h2>
+        <form method="dialog"><button class="icon-button" aria-label="Закрыть" title="Закрыть"><svg class="studio-icon" aria-hidden="true"><use href="#icon-x"/></svg></button></form>
+      </div>
       <div id="help-content"></div>
     </dialog>
   </main>

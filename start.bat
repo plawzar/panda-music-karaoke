@@ -14,6 +14,11 @@ echo.
 
 cd /d "%~dp0"
 
+if defined PANDA_STUDIO_PYTHON (
+    set "PY_EXE=%PANDA_STUDIO_PYTHON%"
+    goto :RUN
+)
+
 REM 1. Check embedded python (Portable Edition)
 if exist "%~dp0python_embed\python.exe" (
     set "PY_EXE=%~dp0python_embed\python.exe"
@@ -40,12 +45,13 @@ exit /b 1
 
 :RUN
 if exist "%~dp0ffmpeg\bin\ffmpeg.exe" set "PATH=%~dp0ffmpeg\bin;%PATH%"
-if exist "%~dp0venv\Lib\site-packages\torch\lib" set "PATH=%~dp0venv\Lib\site-packages\torch\lib;%PATH%"
+if not defined PANDA_STUDIO_PYTHON if exist "%~dp0venv\Lib\site-packages\torch\lib" set "PATH=%~dp0venv\Lib\site-packages\torch\lib;%PATH%"
 if not defined HF_HOME set "HF_HOME=%~dp0.model-cache\huggingface"
 if not defined TORCH_HOME set "TORCH_HOME=%~dp0.model-cache\torch"
 if not defined XDG_CACHE_HOME set "XDG_CACHE_HOME=%~dp0.model-cache"
 if not defined AUDIO_SEPARATOR_MODEL_DIR set "AUDIO_SEPARATOR_MODEL_DIR=%~dp0.model-cache\audio-separator"
 if not exist "%AUDIO_SEPARATOR_MODEL_DIR%" mkdir "%AUDIO_SEPARATOR_MODEL_DIR%"
+if exist "resources\review-start.mp3" copy /Y "resources\review-start.mp3" "static\review-start.mp3" >nul
 echo Server starting at: http://127.0.0.1:%PANDA_STUDIO_PORT%
 echo To stop server: press Ctrl+C
 echo.

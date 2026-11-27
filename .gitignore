@@ -52,6 +52,7 @@ desktop.ini
 # Archives & Temporary Audio
 *.zip
 *.wav
+static/review-start.mp3
 
 # User projects & autosaves (protect personal lyrics & files)
 old_projects/

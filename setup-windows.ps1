@@ -1,10 +1,10 @@
-param([switch]$Cpu)
+param([switch]$Cpu, [switch]$Check)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $runtime = Join-Path $root '.runtime'
 $downloads = Join-Path $runtime 'downloads'
-New-Item -ItemType Directory -Path $downloads -Force | Out-Null
+$profilePath = Join-Path $runtime 'setup-profile-v5'
 
 function Get-Sha256([string]$Path) {
     $stream = [System.IO.File]::OpenRead($Path)
@@ -12,6 +12,20 @@ function Get-Sha256([string]$Path) {
     try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
     finally { $sha.Dispose(); $stream.Dispose() }
 }
+
+$fingerprint = @(
+    Get-Sha256 $PSCommandPath
+    Get-Sha256 (Join-Path $root 'requirements-core.txt')
+    Get-Sha256 (Join-Path $root 'requirements.txt')
+) -join '-'
+if ($Check) {
+    if (!(Test-Path -LiteralPath $profilePath -PathType Leaf)) { exit 1 }
+    $profile = ((Get-Content -LiteralPath $profilePath -Raw).Trim() -split '\s+')
+    if ($profile.Count -ne 5 -or $profile[4] -ne $fingerprint) { exit 1 }
+    exit 0
+}
+
+New-Item -ItemType Directory -Path $downloads -Force | Out-Null
 
 function Save-VerifiedFile($Url, $Destination, $Sha256) {
     if (Test-Path -LiteralPath $Destination) {
@@ -34,7 +48,20 @@ function Invoke-Uv([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "Installation step failed: uv $($Arguments -join ' ')" }
 }
 
-Write-Host '[1/4] Python 3.12 and local environment'
+function Install-FFmpeg {
+    $ffmpeg = Join-Path $root 'ffmpeg'
+    if (Test-Path -LiteralPath (Join-Path $ffmpeg 'bin/ffmpeg.exe')) { return }
+    $ffmpegZip = Join-Path $downloads 'ffmpeg-7.1.1-full_build-shared.zip'
+    Save-VerifiedFile 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip' $ffmpegZip '9f28727e8b472a04c1d2e520aaa425dca82721b995139b35710091130ea6e699'
+    $ffmpegUnpack = Join-Path $runtime 'ffmpeg-unpack'
+    Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegUnpack -Force
+    $ffmpegBin = (Get-ChildItem -LiteralPath $ffmpegUnpack -Filter 'ffmpeg.exe' -File -Recurse | Select-Object -First 1).DirectoryName
+    if (!$ffmpegBin) { throw 'ffmpeg.exe was not found in the download.' }
+    New-Item -ItemType Directory -Path $ffmpeg -Force | Out-Null
+    Copy-Item -LiteralPath $ffmpegBin -Destination $ffmpeg -Recurse -Force
+}
+
+Write-Host '[1/3] Python 3.12 and local environment'
 $uvDirectory = Join-Path $runtime 'uv'
 $uv = Join-Path $uvDirectory 'uv.exe'
 if (!(Test-Path -LiteralPath $uv)) {
@@ -52,7 +79,7 @@ if (!(Test-Path -LiteralPath $python)) {
     Invoke-Uv @('venv', '--managed-python', '--python', '3.12.16', $environment)
 }
 
-Write-Host '[2/4] Audio and speech dependencies'
+Write-Host '[2/3] Audio and speech dependencies'
 $ramMiB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB)
 $full = $false
 if (!$Cpu -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
@@ -68,32 +95,54 @@ if (!$Cpu -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
 if ($full) {
     Write-Host 'Selected NVIDIA profile: WhisperX, vocal isolation and GPU text inference.'
     try {
-        Invoke-Uv @('pip','install','--python',$python,'--index-url','https://download.pytorch.org/whl/cu128','torch==2.8.0','torchaudio==2.8.0','torchvision==0.23.0')
-        Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements.txt'),'onnxruntime==1.26.0')
+        Invoke-Uv @('pip', 'install', '--python', $python,
+            '-r', (Join-Path $root 'requirements.txt'), 'onnxruntime==1.26.0',
+            'torch @ https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl',
+            'torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl',
+            'torchvision @ https://download.pytorch.org/whl/cu128/torchvision-0.23.0%2Bcu128-cp312-cp312-win_amd64.whl')
+        & $python -c "import torch, whisperx; assert torch.cuda.is_available()"
+        if ($LASTEXITCODE -ne 0) { throw 'The CUDA runtime is unavailable.' }
+        Install-FFmpeg
     } catch {
-        Write-Warning "NVIDIA profile installation failed. Continuing with the CPU profile. $_"
+        Write-Warning "NVIDIA profile installation failed. Trying an alternative profile. $_"
         $full = $false
     }
 }
-if (!$full) {
+$directml = $false
+if (!$full -and !$Cpu -and $ramMiB -ge 6144) {
+    $radeon = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+        Where-Object { $_.PNPDeviceID -match '^PCI\\VEN_1002&' }
+    if ($radeon) {
+        Write-Host 'Trying Radeon DirectML: GPU vocal separation and CPU speech recognition.'
+        try {
+            $directmlEnvironment = Join-Path $runtime 'directml-venv'
+            $directmlPython = Join-Path $directmlEnvironment 'Scripts/python.exe'
+            if (!(Test-Path -LiteralPath $directmlPython)) {
+                Invoke-Uv @('venv', '--managed-python', '--python', '3.12.16', $directmlEnvironment)
+            }
+            # faster-whisper declares the CPU distribution. DirectML provides the
+            # same onnxruntime module, and installing both overwrites shared files.
+            $excludes = Join-Path $runtime 'directml-excludes.txt'
+            Set-Content -LiteralPath $excludes -Value 'onnxruntime' -Encoding ASCII
+            Invoke-Uv @('pip', 'install', '--python', $directmlPython, '--excludes', $excludes,
+                '-r', (Join-Path $root 'requirements-core.txt'), 'audio-separator==0.48.0', 'audioread>=3.0.0', 'onnxruntime-directml==1.24.4',
+                'torch @ https://download.pytorch.org/whl/cpu/torch-2.8.0%2Bcpu-cp312-cp312-win_amd64.whl',
+                'torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.23.0%2Bcpu-cp312-cp312-win_amd64.whl')
+            & $directmlPython -c "import onnxruntime as ort; from audio_separator.separator import Separator; assert 'DmlExecutionProvider' in ort.get_available_providers()"
+            if ($LASTEXITCODE -ne 0) { throw 'The DirectML runtime is unavailable.' }
+            Install-FFmpeg
+            $directml = $true
+        } catch {
+            Write-Warning "DirectML setup failed. Continuing with the CPU profile. $_"
+        }
+    }
+}
+if (!$full -and !$directml) {
     Write-Host 'Selected lightweight CPU profile: faster-whisper int8.'
     Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements-core.txt'))
 }
 
-Write-Host '[3/4] FFmpeg'
-$ffmpeg = Join-Path $root 'ffmpeg'
-if ($full -and !(Test-Path -LiteralPath (Join-Path $ffmpeg 'bin/ffmpeg.exe'))) {
-    $ffmpegZip = Join-Path $downloads 'ffmpeg-7.1.1-full_build-shared.zip'
-    Save-VerifiedFile 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip' $ffmpegZip '9f28727e8b472a04c1d2e520aaa425dca82721b995139b35710091130ea6e699'
-    $ffmpegUnpack = Join-Path $runtime 'ffmpeg-unpack'
-    Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegUnpack -Force
-    $ffmpegBin = (Get-ChildItem -LiteralPath $ffmpegUnpack -Filter 'ffmpeg.exe' -File -Recurse | Select-Object -First 1).DirectoryName
-    if (!$ffmpegBin) { throw 'ffmpeg.exe was not found in the download.' }
-    New-Item -ItemType Directory -Path $ffmpeg -Force | Out-Null
-    Copy-Item -LiteralPath $ffmpegBin -Destination $ffmpeg -Recurse -Force
-}
-
-Write-Host '[4/4] Local text model'
+Write-Host '[3/3] Local text model'
 $editor = Join-Path $root '.model-cache/lyrics-editor'
 $llama = Join-Path $editor 'runtime'
 New-Item -ItemType Directory -Path $llama -Force | Out-Null
@@ -119,5 +168,8 @@ if ($ramMiB -lt 12288) {
 }
 
 $lowMemory = [int]($ramMiB -lt 6144)
-Set-Content -LiteralPath (Join-Path $runtime 'setup-profile-v3') -Value "$llamaBuild $model $lowMemory" -Encoding ASCII
+$vocalBackend = if ($directml) { 'directml' } else { 'default' }
+$pendingProfile = "$profilePath.partial"
+Set-Content -LiteralPath $pendingProfile -Value "$llamaBuild $model $lowMemory $vocalBackend $fingerprint" -Encoding ASCII
+Move-Item -LiteralPath $pendingProfile -Destination $profilePath -Force
 Write-Host 'Installation complete. Use Launch PANDA MUSIC Karaoke - Windows.bat to open the studio.'
