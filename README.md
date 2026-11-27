@@ -8,9 +8,9 @@
 
 | Система | Файл запуска |
 | --- | --- |
-| Windows 10/11 x64 | `Launch PANDA MUSIC Karaoke.bat` |
-| macOS 13.3 и новее, Apple Silicon и Intel | `Launch PANDA MUSIC Karaoke.command` |
-| Linux x64 / ARM64, экспериментально | `sh "./Launch PANDA MUSIC Karaoke.command"` из папки студии |
+| Windows 10/11 x64 | `Launch PANDA MUSIC Karaoke - Windows.bat` |
+| macOS 13.3 и новее, Apple Silicon и Intel | `Launch PANDA MUSIC Karaoke - Mac.command` |
+| Linux x64 / ARM64, экспериментально | `sh "./Launch PANDA MUSIC Karaoke - Mac.command"` из папки студии |
 
 При первом запуске скрипт автоматически загружает локальный Python 3.12, зависимости и текстовую модель. При первой автосинхронизации скачивается модель распознавания. Подробности в [START-HERE.txt](START-HERE.txt).
 

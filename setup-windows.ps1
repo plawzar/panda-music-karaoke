@@ -120,4 +120,4 @@ if ($ramMiB -lt 12288) {
 
 $lowMemory = [int]($ramMiB -lt 6144)
 Set-Content -LiteralPath (Join-Path $runtime 'setup-profile-v3') -Value "$llamaBuild $model $lowMemory" -Encoding ASCII
-Write-Host 'Installation complete. Use Launch PANDA MUSIC Karaoke.bat to open the studio.'
+Write-Host 'Installation complete. Use Launch PANDA MUSIC Karaoke - Windows.bat to open the studio.'
