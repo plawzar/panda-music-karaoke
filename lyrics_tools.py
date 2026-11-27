@@ -6,6 +6,7 @@ from collections import Counter
 from difflib import SequenceMatcher
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import re
 from secrets import token_hex
@@ -26,6 +27,11 @@ model_lock = asyncio.Lock()
 model_process = None
 model_url = None
 model_key = token_hex(24)
+if os.name == "nt":
+    build = os.environ.get("PANDA_LLAMA_BUILD")
+    runtime = cache / (f"runtime-{build}" if build in {"cpu", "vulkan"} else "runtime")
+else:
+    runtime = cache / f"runtime-{os.uname().sysname}-{os.uname().machine}"
 
 
 @atexit.register
@@ -37,8 +43,13 @@ def stop_editor_model():
 async def complete(client, instructions, data, schema):
     global model_process, model_url
     if model_process is None or model_process.poll() is not None:
-        executable = cache / "runtime" / "llama-server.exe"
-        weights = cache / "Qwen3-4B-Q4_K_M.gguf"
+        executable = runtime / ("llama-server.exe" if os.name == "nt" else "llama-server")
+        weights = next(
+            (cache / name for name in ("Qwen3-4B-Q4_K_M.gguf", "Qwen3-1.7B-Q8_0.gguf") if (cache / name).is_file()),
+            cache / "Qwen3-4B-Q4_K_M.gguf",
+        )
+        if os.environ.get("PANDA_COMPACT_TEXT") == "1" and (cache / "Qwen3-1.7B-Q8_0.gguf").is_file():
+            weights = cache / "Qwen3-1.7B-Q8_0.gguf"
         if not executable.is_file() or not weights.is_file():
             raise HTTPException(503, "Локальная модель проверки текста не установлена.")
         with socket.socket() as listener:
@@ -48,7 +59,8 @@ async def complete(client, instructions, data, schema):
         with (cache / "editor-model.log").open("w", encoding="utf-8") as log:
             model_process = subprocess.Popen([
                 str(executable), "-m", str(weights), "--host", "127.0.0.1", "--port", str(port),
-                "-c", "16384", "-np", "1", "-ngl", "auto", "--jinja", "--api-key", model_key,
+                "-c", "16384", "-np", "1", "-t", str(max(1, min(8, (os.cpu_count() or 2) - 1))),
+                "-ngl", "auto", "--jinja", "--api-key", model_key,
                 "--sleep-idle-seconds", "45",
             ], stdout=log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     for _ in range(200):

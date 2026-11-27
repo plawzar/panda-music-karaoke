@@ -24,6 +24,8 @@ from lyrics_parser import UniversalLyricsParser, _extract_adlib_from_text
 _WHISPERX_MODEL_CACHE: Dict[Tuple[str, str, str, str], Any] = {}
 _WHISPERX_ALIGN_CACHE: Dict[Tuple[str, str], Any] = {}
 _STANDARD_WHISPER_CACHE: Dict[Tuple[str, str], Any] = {}
+_CPU_WHISPER_MODEL: Any = None
+_CPU_WHISPER_MODEL_NAME: Optional[str] = None
 
 
 # Language mapping for Pyphen hyphenation dictionaries
@@ -541,6 +543,30 @@ def syllabify_line(
 class SyllableAligner:
     """Aligns audio with existing or new lyrics down to the syllable level."""
 
+    @staticmethod
+    def _run_cpu_whisper(audio_path: str, language: str, whisper_model: str) -> List[Dict[str, Any]]:
+        from faster_whisper import WhisperModel
+
+        global _CPU_WHISPER_MODEL, _CPU_WHISPER_MODEL_NAME
+        if whisper_model == "base" and os.environ.get("PANDA_LOW_MEMORY") == "1":
+            whisper_model = "tiny"
+        if _CPU_WHISPER_MODEL is None or _CPU_WHISPER_MODEL_NAME != whisper_model:
+            _CPU_WHISPER_MODEL = None
+            threads = max(1, min(6, (os.cpu_count() or 2) - 1))
+            _CPU_WHISPER_MODEL = WhisperModel(whisper_model, device="cpu", compute_type="int8", cpu_threads=threads)
+            _CPU_WHISPER_MODEL_NAME = whisper_model
+
+        print(f"[faster-whisper] CPU int8 · {whisper_model}", flush=True)
+        segments, _ = _CPU_WHISPER_MODEL.transcribe(
+            audio_path, language=language, word_timestamps=True, beam_size=3, vad_filter=False,
+        )
+        return [
+            {"word": word.word.strip(), "start": word.start, "end": word.end, "score": word.probability, "chars": []}
+            for segment in segments
+            for word in segment.words or []
+            if word.word.strip()
+        ]
+
     @classmethod
     def _run_whisperx_pipeline(
         cls,
@@ -552,11 +578,28 @@ class SyllableAligner:
         Runs WhisperX CTranslate2 + Wav2Vec2 CTC Phoneme Alignment.
         Returns words with acoustic timestamps and character-level boundaries.
         """
-        import whisperx
+        if os.environ.get("PANDA_LIGHTWEIGHT") == "1":
+            return cls._run_cpu_whisper(audio_path, language, whisper_model)
+
+        try:
+            return cls._run_phoneme_alignment(audio_path, language, whisper_model)
+        except (ImportError, OSError, RuntimeError) as error:
+            print(f"[WhisperX] Switching to faster-whisper on CPU: {error}", flush=True)
+        # Leave the exception handler before inference so failed GPU tensors can be released.
+        _WHISPERX_MODEL_CACHE.clear()
+        _WHISPERX_ALIGN_CACHE.clear()
+        return cls._run_cpu_whisper(audio_path, language, whisper_model)
+
+    @staticmethod
+    def _run_phoneme_alignment(audio_path: str, language: str, whisper_model: str) -> List[Dict[str, Any]]:
         import torch
+        import whisperx
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if torch.cuda.is_available() else "float32"
+        compute_type = "float16" if device == "cuda" else "int8"
+        batch_size = 2
+        if device == "cuda" and torch.cuda.mem_get_info()[0] >= 6 * 1024**3:
+            batch_size = 4
 
         cache_key = (whisper_model, device, compute_type, language)
         if cache_key in _WHISPERX_MODEL_CACHE:
@@ -574,7 +617,7 @@ class SyllableAligner:
 
         audio = whisperx.load_audio(audio_path)
         print(f"[WhisperX Ultra] Transkribiere Acapella mit VAD...", flush=True)
-        result = model.transcribe(audio, batch_size=4, chunk_size=30)
+        result = model.transcribe(audio, batch_size=batch_size, chunk_size=30)
 
         align_cache_key = (language, device)
         if align_cache_key in _WHISPERX_ALIGN_CACHE:
@@ -620,6 +663,8 @@ class SyllableAligner:
 
     @classmethod
     def _try_local_turbo(cls, audio_path: str, language: str) -> List[Dict[str, Any]]:
+        if os.environ.get("PANDA_LIGHTWEIGHT") == "1":
+            return []
         import torch
         from faster_whisper.utils import download_model
 

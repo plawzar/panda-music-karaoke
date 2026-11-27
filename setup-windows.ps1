@@ -16,16 +16,17 @@ function Get-Sha256([string]$Path) {
 function Save-VerifiedFile($Url, $Destination, $Sha256) {
     if (Test-Path -LiteralPath $Destination) {
         if ((Get-Sha256 $Destination) -eq $Sha256) { return }
-        throw "Existing download failed verification: $Destination"
     }
     $partial = "$Destination.partial"
-    & curl.exe --fail --location --retry 2 --continue-at - --output $partial $Url
-    if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
+    if (!(Test-Path -LiteralPath $partial) -or (Get-Sha256 $partial) -ne $Sha256) {
+        & curl.exe --fail --location --retry 2 --continue-at - --output $partial $Url
+        if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
+    }
     if ((Get-Sha256 $partial) -ne $Sha256) {
         Remove-Item -LiteralPath $partial
         throw "Download did not match its SHA-256 checksum: $Url"
     }
-    Move-Item -LiteralPath $partial -Destination $Destination
+    Move-Item -LiteralPath $partial -Destination $Destination -Force
 }
 
 function Invoke-Uv([string[]]$Arguments) {
@@ -52,19 +53,36 @@ if (!(Test-Path -LiteralPath $python)) {
 }
 
 Write-Host '[2/4] Audio and speech dependencies'
-$torchIndex = 'https://download.pytorch.org/whl/cpu'
+$ramMiB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB)
+$full = $false
 if (!$Cpu -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
-    $driver = & nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>$null | Select-Object -First 1
-    if ($driver -and $driver -match '^\d+\.\d+$' -and [version]$driver -ge [version]'570.0') {
-        $torchIndex = 'https://download.pytorch.org/whl/cu128'
+    $gpus = & nvidia-smi --query-gpu=driver_version,memory.total --format=csv,noheader,nounits 2>$null
+    foreach ($gpu in $gpus) {
+        if ($gpu -match '^\s*(\d+\.\d+)\s*,\s*(\d+)\s*$' -and
+            [version]$Matches[1] -ge [version]'570.0' -and [int]$Matches[2] -ge 4096 -and $ramMiB -ge 8192) {
+            $full = $true
+            break
+        }
     }
 }
-Invoke-Uv @('pip','install','--python',$python,'--index-url',$torchIndex,'torch==2.8.0','torchaudio==2.8.0','torchvision==0.23.0')
-Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements.txt'),'onnxruntime==1.26.0')
+if ($full) {
+    Write-Host 'Selected NVIDIA profile: WhisperX, vocal isolation and GPU text inference.'
+    try {
+        Invoke-Uv @('pip','install','--python',$python,'--index-url','https://download.pytorch.org/whl/cu128','torch==2.8.0','torchaudio==2.8.0','torchvision==0.23.0')
+        Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements.txt'),'onnxruntime==1.26.0')
+    } catch {
+        Write-Warning "NVIDIA profile installation failed. Continuing with the CPU profile. $_"
+        $full = $false
+    }
+}
+if (!$full) {
+    Write-Host 'Selected lightweight CPU profile: faster-whisper int8.'
+    Invoke-Uv @('pip','install','--python',$python,'-r',(Join-Path $root 'requirements-core.txt'))
+}
 
 Write-Host '[3/4] FFmpeg'
 $ffmpeg = Join-Path $root 'ffmpeg'
-if (!(Test-Path -LiteralPath (Join-Path $ffmpeg 'bin/ffmpeg.exe'))) {
+if ($full -and !(Test-Path -LiteralPath (Join-Path $ffmpeg 'bin/ffmpeg.exe'))) {
     $ffmpegZip = Join-Path $downloads 'ffmpeg-7.1.1-full_build-shared.zip'
     Save-VerifiedFile 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.zip' $ffmpegZip '9f28727e8b472a04c1d2e520aaa425dca82721b995139b35710091130ea6e699'
     $ffmpegUnpack = Join-Path $runtime 'ffmpeg-unpack'
@@ -75,16 +93,31 @@ if (!(Test-Path -LiteralPath (Join-Path $ffmpeg 'bin/ffmpeg.exe'))) {
     Copy-Item -LiteralPath $ffmpegBin -Destination $ffmpeg -Recurse -Force
 }
 
-Write-Host '[4/4] Local text model (2.5 GB)'
+Write-Host '[4/4] Local text model'
 $editor = Join-Path $root '.model-cache/lyrics-editor'
 $llama = Join-Path $editor 'runtime'
 New-Item -ItemType Directory -Path $llama -Force | Out-Null
+$llamaBuild = 'cpu'
+$llamaSha = '7316c7c0e1f6a35c46ed386d140a9854f49d2496a3a368ab38d2805da70c7b2d'
+if ($full) {
+    $llamaBuild = 'vulkan'
+    $llamaSha = '97dfdec913525798762df030e638f62ede2c64e85346765e5570b2ba0d4bec8c'
+}
+$llama = Join-Path $editor "runtime-$llamaBuild"
 if (!(Test-Path -LiteralPath (Join-Path $llama 'llama-server.exe'))) {
-    $llamaZip = Join-Path $downloads 'llama-b12811-bin-win-vulkan-x64.zip'
-    Save-VerifiedFile 'https://github.com/ggml-org/llama.cpp/releases/download/b12811/llama-b12811-bin-win-vulkan-x64.zip' $llamaZip '97dfdec913525798762df030e638f62ede2c64e85346765e5570b2ba0d4bec8c'
+    $asset = "llama-b12811-bin-win-$llamaBuild-x64.zip"
+    $llamaZip = Join-Path $downloads $asset
+    Save-VerifiedFile "https://github.com/ggml-org/llama.cpp/releases/download/b12811/$asset" $llamaZip $llamaSha
     Expand-Archive -LiteralPath $llamaZip -DestinationPath $llama -Force
 }
-Save-VerifiedFile 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true' (Join-Path $editor 'Qwen3-4B-Q4_K_M.gguf') '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5'
+if ($ramMiB -lt 12288) {
+    $model = 'Qwen3-1.7B-Q8_0.gguf'
+    Save-VerifiedFile 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf?download=true' (Join-Path $editor $model) '061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a'
+} else {
+    $model = 'Qwen3-4B-Q4_K_M.gguf'
+    Save-VerifiedFile 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true' (Join-Path $editor $model) '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5'
+}
 
-Set-Content -LiteralPath (Join-Path $runtime 'setup-complete') -Value 'PANDA MUSIC Karaoke Studio Windows beta' -Encoding ASCII
+$lowMemory = [int]($ramMiB -lt 6144)
+Set-Content -LiteralPath (Join-Path $runtime 'setup-profile-v3') -Value "$llamaBuild $model $lowMemory" -Encoding ASCII
 Write-Host 'Installation complete. Use Launch PANDA MUSIC Karaoke.bat to open the studio.'
