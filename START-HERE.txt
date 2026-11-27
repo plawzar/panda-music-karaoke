@@ -1,28 +1,28 @@
-ЗАПУСК PANDA MUSIC KARAOKE STUDIO
+▶️ ЗАПУСК PANDA MUSIC KARAOKE STUDIO
 
-1. Распакуй ZIP и открой папку PANDA MUSIC Karaoke Studio.
+1. 📂 Распакуй ZIP и открой папку PANDA MUSIC Karaoke Studio.
 
-2. Дважды щёлкни по файлу для своей системы:
+2. 🖱️ Дважды щёлкни по файлу для своей системы:
 
-   Windows   Launch PANDA MUSIC Karaoke - Windows.bat
-   Mac       Launch PANDA MUSIC Karaoke - Mac.command
+   ▶️ Windows   Launch PANDA MUSIC Karaoke - Windows.bat
+   ▶️ Mac       Launch PANDA MUSIC Karaoke - Mac.command
 
-3. Оставь окно запуска открытым. В первый раз нужен интернет.
+3. 🌐 Оставь окно запуска открытым. В первый раз нужен интернет.
    Дождись, пока студия откроется в браузере.
    Если вкладка не открылась, введи в браузере http://127.0.0.1:8001/
 
-ОБНОВЛЕНИЕ
+🔄 ОБНОВЛЕНИЕ
 
 При запуске beta.6 и новее нажми Y, если лаунчер предложит обновление.
 Для перехода с beta.5 и старше закрой студию и распакуй новый ZIP
 поверх своей установки. Сохрани projects, uploads, outputs, .model-cache,
 .runtime и venv. Затем открой тот же файл запуска.
 
-СИСТЕМЫ
+💻 СИСТЕМЫ
 
 Windows 10/11 x64 и macOS 13.3+ на Apple Silicon или Intel.
 Экспериментальный запуск на Linux из папки студии:
     sh "./Launch PANDA MUSIC Karaoke - Mac.command"
 
-Загрузки и обратная связь:
+💬 Загрузки и обратная связь:
 https://github.com/plawzar/panda-music-karaoke
